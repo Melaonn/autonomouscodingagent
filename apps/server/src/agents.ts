@@ -7,7 +7,6 @@ function textFrom(result: JobResult, backend: Backend) {
     try {
       const event = JSON.parse(line);
       if (backend === 'codex' && event.type === 'item.completed' && event.item?.type === 'agent_message') text = event.item.text || text;
-      if (backend === 'claude' && event.type === 'result') text = typeof event.result === 'string' ? event.result : JSON.stringify(event.structured_output ?? event.result);
     } catch { /* streamed tools may write non-JSON diagnostics */ }
   }
   return text || result.stdout;

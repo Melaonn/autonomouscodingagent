@@ -1,6 +1,6 @@
 # SDLC Control Plane
 
-This repository contains a self-hosted control plane that drives Codex or Claude Code through all seven SDLC phases. The coding agent produces candidates. The controller decides whether evidence is sufficient to continue.
+This repository contains a self-hosted control plane that drives Codex through all seven SDLC phases. Separate Codex sessions implement, author independent acceptance tests, and review. The controller decides whether evidence is sufficient to continue.
 
 ## Lifecycle
 
@@ -14,22 +14,24 @@ This repository contains a self-hosted control plane that drives Codex or Claude
 
 The terminal success condition is `monitoring`: all seven phases have been entered and the release is under maintenance. `blocked`, `failed`, `cancelled`, `needs_input`, and `awaiting_approval` are explicit non-success states.
 
-## Local development
+## Smooth local setup
 
-Requirements are Node.js 24, Docker Desktop with the Linux engine, Codex CLI authentication, Claude Code authentication, and a controlled GitHub test repository.
+The normal user flow does not require CLI authentication or editing credential paths.
 
-1. Copy `.env.example` to `.env` and replace all placeholder secrets.
-2. Set `GITHUB_TOKEN` to a fine-grained token for the controlled repository, or configure a GitHub App.
-3. Set `CODEX_AUTH_DIR` and `CLAUDE_AUTH_DIR` to **absolute host paths** for dedicated worker profiles. Do not use personal home directories. Local runner mode mounts these paths only into agent containers.
-4. Build the worker image: `docker build -f docker/worker/Dockerfile -t sdlc-worker:local .`
-5. Start the isolated runner: `npm run runner`.
-6. Start the application: `npm run dev` and open `http://localhost:5173`.
+1. Install and start Docker Desktop with the Linux engine.
+2. Run `powershell -ExecutionPolicy Bypass -File .\start.ps1`.
+3. Open `http://localhost:4310` and sign in with the administrator password chosen by the script.
+4. Select **Connect Codex**, complete the OpenAI device page, paste a fine-grained GitHub token, and choose a repository.
 
-Without Docker or credentials the dashboard remains available, while readiness and new runs fail closed.
+The script generates infrastructure secrets, builds the application and worker images, starts PostgreSQL, and opens the browser. Codex credentials remain in the dedicated `sdlc-codex-auth` Docker volume. The GitHub token is verified and stored encrypted with the server session secret.
 
-## Compose deployment
+For source development, copy `.env.example` to `.env`, then run `npm run runner` and `npm run dev`. The same browser setup page configures Codex and GitHub.
 
-Set `SESSION_SECRET`, `RUNNER_TOKEN`, `POSTGRES_PASSWORD`, `PUBLIC_URL`, and GitHub configuration. Compose uses the exact Docker volume names `sdlc-codex-auth` and `sdlc-claude-auth`; seed them through interactive worker containers with `codex login` and `claude auth`. Then run `docker compose up --build`. The app is served on port 4310. The runner alone receives the Docker socket. Agent and verification containers do not receive the control-plane database, GitHub deployment credentials, or Docker socket.
+## Single-server deployment
+
+Use a dedicated Linux VM with Docker because the runner creates isolated verification containers and therefore needs a Docker daemon. Point a domain at the VM, clone this repository, and run `bash deploy/deploy.sh`. The script asks only for the domain and an administrator password, generates the remaining secrets, and launches PostgreSQL, the control plane, runner, worker image, and Caddy HTTPS proxy.
+
+The browser then handles Codex and GitHub connection. Compose uses the exact Docker volume name `sdlc-codex-auth`, so authentication survives restarts. The runner alone receives the Docker socket. Agent and verification containers do not receive the control-plane database, GitHub deployment credentials, or Docker socket.
 
 The deployment workflow must accept `workflow_dispatch` inputs named `sdlc_run_id`, `candidate_sha`, and `environment`. The rollback workflow must accept the same inputs. Store environment credentials in GitHub Environments and enforce any additional environment reviewers there.
 

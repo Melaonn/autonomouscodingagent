@@ -24,6 +24,7 @@ export class Store {
     await this.db.query(`CREATE TABLE IF NOT EXISTS audit (id bigserial PRIMARY KEY, actor text NOT NULL, action text NOT NULL, data jsonb NOT NULL, created_at timestamptz DEFAULT now());`);
     await this.db.query(`CREATE TABLE IF NOT EXISTS sessions (id text PRIMARY KEY, data jsonb NOT NULL, expires_at timestamptz NOT NULL);`);
     await this.db.query(`CREATE TABLE IF NOT EXISTS monitors (run_id text PRIMARY KEY, failures integer NOT NULL DEFAULT 0, last_check timestamptz, incident_run_id text);`);
+    await this.db.query(`CREATE TABLE IF NOT EXISTS secrets (id text PRIMARY KEY, value text NOT NULL, updated_at timestamptz DEFAULT now());`);
     await this.db.query(`INSERT INTO schema_migrations(version) VALUES (1) ON CONFLICT DO NOTHING;`);
   }
   async put<T extends { id: string }>(kind: string, value: T) { await this.db.query('INSERT INTO entities(id,kind,data) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET data=$3', [value.id, kind, JSON.stringify(value)]); }
@@ -70,5 +71,7 @@ export class Store {
   async deleteSession(id: string) { await this.db.query('DELETE FROM sessions WHERE id=$1', [id]); }
   async monitor(id: string) { await this.db.query('INSERT INTO monitors(run_id) VALUES($1) ON CONFLICT DO NOTHING', [id]); return (await this.db.query<{ failures: number; last_check: Date | null; incident_run_id: string | null }>('SELECT * FROM monitors WHERE run_id=$1', [id])).rows[0]; }
   async updateMonitor(id: string, failures: number, incident?: string | null) { await this.db.query('UPDATE monitors SET failures=$2,last_check=now(),incident_run_id=COALESCE($3,incident_run_id) WHERE run_id=$1', [id, failures, incident || null]); }
+  async setSecret(id: string, value: string) { await this.db.query('INSERT INTO secrets(id,value,updated_at) VALUES($1,$2,now()) ON CONFLICT(id) DO UPDATE SET value=$2,updated_at=now()', [id, value]); }
+  async secret(id: string) { return (await this.db.query<{ value: string }>('SELECT value FROM secrets WHERE id=$1', [id])).rows[0]?.value; }
   close() { return this.closer(); }
 }

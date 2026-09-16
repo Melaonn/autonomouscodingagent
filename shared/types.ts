@@ -1,7 +1,7 @@
 import { z } from 'zod';
 export const phases = ['planning', 'requirements', 'design', 'coding', 'testing', 'deployment', 'maintenance'] as const;
 export type Phase = typeof phases[number];
-export const backendSchema = z.enum(['codex', 'claude']);
+export const backendSchema = z.literal('codex');
 export type Backend = z.infer<typeof backendSchema>;
 export type Status = 'queued' | 'running' | 'repairing' | 'needs_input' | 'awaiting_approval' | 'blocked' | 'failed' | 'succeeded' | 'monitoring' | 'cancelled';
 export type Role = 'admin' | 'operator' | 'viewer';

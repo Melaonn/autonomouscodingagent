@@ -2,9 +2,11 @@ import { createPrivateKey, createSign } from 'node:crypto';
 import type { Repository, Run } from '../../../shared/types.js';
 import { readFile } from 'node:fs/promises';
 let cached: { token: string; expires: number } | undefined;
+let configuredToken = '';
+export function setRepositoryToken(token: string) { configuredToken = token; }
 const base64url = (value: string | Buffer) => Buffer.from(value).toString('base64url');
 async function installationToken() {
-  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  if (configuredToken || process.env.GITHUB_TOKEN) return configuredToken || process.env.GITHUB_TOKEN!;
   if (!process.env.GITHUB_APP_ID || !process.env.GITHUB_INSTALLATION_ID || !process.env.GITHUB_APP_PRIVATE_KEY_FILE) throw new Error('GitHub repository credentials are not configured');
   if (cached && cached.expires > Date.now() + 60_000) return cached.token;
   const now = Math.floor(Date.now() / 1000); const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' })); const payload = base64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: process.env.GITHUB_APP_ID }));
@@ -34,7 +36,7 @@ export async function requiredChecks(repo: Repository, sha: string) {
   return { state: failed ? 'failure' as const : pending ? 'pending' as const : 'success' as const, details };
 }
 export async function markReady(repo: Repository, number: number) { await api(`/repos/${repo.owner}/${repo.repo}/pulls/${number}/ready_for_review`, { method: 'POST' }); }
-export async function dispatch(repo: Repository, workflow: string, ref: string, runId: string) { await api(`/repos/${repo.owner}/${repo.repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ref, inputs: { sdlc_run_id: runId, candidate_sha: ref, environment: repo.deployment.environment } }) }); }
+export async function dispatch(repo: Repository, workflow: string, ref: string, candidateSha: string, runId: string) { await api(`/repos/${repo.owner}/${repo.repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ref, inputs: { sdlc_run_id: runId, candidate_sha: candidateSha, environment: repo.deployment.environment } }) }); }
 export async function workflowStatus(repo: Repository, workflow: string, sha: string) {
   const data = await api<{ workflow_runs: { id: number; head_sha: string; status: string; conclusion: string | null; html_url: string }[] }>(`/repos/${repo.owner}/${repo.repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&per_page=30`);
   const run = data.workflow_runs.find(r => r.head_sha === sha); if (!run) return { state: 'pending' as const }; return { state: run.status !== 'completed' ? 'pending' as const : run.conclusion === 'success' ? 'success' as const : 'failure' as const, run };
@@ -45,5 +47,16 @@ export async function oauthUser(code: string) {
   const auth = await response.json() as { access_token?: string; error_description?: string }; if (!auth.access_token) throw new Error(auth.error_description || 'OAuth exchange failed');
   const userResponse = await fetch('https://api.github.com/user', { headers: headers(auth.access_token) }); if (!userResponse.ok) throw new Error('Unable to read GitHub user'); return userResponse.json() as Promise<{ login: string }>;
 }
+export async function validateRepositoryToken(token: string) {
+  const response = await fetch('https://api.github.com/user', { headers: headers(token), signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`GitHub rejected this token (${response.status})`);
+  const user = await response.json() as { login: string };
+  if (!user.login) throw new Error('GitHub token did not identify a user');
+  return user.login;
+}
+export async function availableRepositories() {
+  const repositories = await api<{ name: string; full_name: string; private: boolean; default_branch: string; language: string | null; permissions?: { push?: boolean } }[]>('/user/repos?affiliation=owner,collaborator,organization_member&sort=updated&per_page=100');
+  return repositories.filter(repo => repo.permissions?.push !== false).map(repo => ({ name: repo.name, fullName: repo.full_name, private: repo.private, defaultBranch: repo.default_branch, language: repo.language }));
+}
 export function oauthUrl(state: string) { return `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(process.env.GITHUB_CLIENT_ID || '')}&scope=read:user&state=${encodeURIComponent(state)}`; }
-export function githubConfigured() { return !!(process.env.GITHUB_TOKEN || (process.env.GITHUB_APP_ID && process.env.GITHUB_INSTALLATION_ID && process.env.GITHUB_APP_PRIVATE_KEY_FILE)); }
+export function githubConfigured() { return !!(configuredToken || process.env.GITHUB_TOKEN || (process.env.GITHUB_APP_ID && process.env.GITHUB_INSTALLATION_ID && process.env.GITHUB_APP_PRIVATE_KEY_FILE)); }

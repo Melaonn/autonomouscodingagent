@@ -56,6 +56,7 @@ export class Engine {
   private async planning(run: Run, token: string) {
     if (run.step === 'preflight') {
       const ready = await this.runner.ready(); if (!ready.ok) { run.status = 'blocked'; run.blocker = `Execution environment not ready: ${JSON.stringify(ready)}`; return this.save(run, token, 'blocked', run.blocker); }
+      if (!(await this.runner.codexStatus()).connected) { run.status = 'blocked'; run.blocker = 'Codex is not connected. Open System setup and connect Codex.'; return this.save(run, token, 'blocked', run.blocker); }
       if (!githubConfigured()) { run.status = 'blocked'; run.blocker = 'GitHub repository credentials are not configured'; return this.save(run, token, 'blocked', run.blocker); }
       run.baseSha = await this.runner.prepare(run.id, run.policy.owner, run.policy.repo, run.policy.branch, await repositoryToken()); run.branch = `sdlc/${run.id}`;
       const documents = await this.store.searchDocuments(run.prompt); run.context = documents.map(d => ({ id: d.id, title: d.title, version: d.version, hash: d.hash, excerpt: d.content.slice(0, 12000) }));
@@ -132,7 +133,7 @@ export class Engine {
     }
     if (run.step === 'approval') {
       if (!validApproval(run)) { run.status = 'awaiting_approval'; return this.save(run, token, 'approval', 'Deployment approval is missing or stale'); }
-      await dispatch(run.policy, run.policy.deployment.workflow, run.candidateSha!, run.id); run.step = 'release'; run.status = 'running'; await this.save(run, token, 'deployment', `Approved deployment started by ${run.approval?.approvedBy}`); return;
+      await dispatch(run.policy, run.policy.deployment.workflow, run.branch!, run.candidateSha!, run.id); run.step = 'release'; run.status = 'running'; await this.save(run, token, 'deployment', `Approved deployment started by ${run.approval?.approvedBy}`); return;
     }
     if (run.step === 'release') {
       const deployment = await workflowStatus(run.policy, run.policy.deployment.workflow, run.candidateSha!); if (deployment.state === 'pending') { await this.save(run, token, 'waiting', 'Waiting for deployment workflow'); return; }
@@ -140,7 +141,7 @@ export class Engine {
       run.deployment = { workflowRunId: deployment.run?.id, releasedAt: now(), healthy: false }; run.step = 'smoke'; await this.save(run, token, 'deployment', 'Deployment workflow passed; running health check'); return;
     }
     if (run.step === 'smoke') {
-      const healthy = await this.health(run); if (!healthy) { await dispatch(run.policy, run.policy.deployment.rollbackWorkflow, run.policy.branch, run.id); run.status = 'failed'; run.blocker = 'Post-deployment health check failed; rollback workflow dispatched'; return this.save(run, token, 'rollback', run.blocker); }
+      const healthy = await this.health(run); if (!healthy) { await dispatch(run.policy, run.policy.deployment.rollbackWorkflow, run.policy.branch, run.candidateSha!, run.id); run.status = 'failed'; run.blocker = 'Post-deployment health check failed; rollback workflow dispatched'; return this.save(run, token, 'rollback', run.blocker); }
       run.deployment!.healthy = true; run.phase = 'maintenance'; run.step = 'enable-monitoring'; await this.save(run, token, 'deployment', 'Deployment health check passed');
     }
   }

@@ -4,7 +4,10 @@ import { Store } from '../apps/server/src/store.js';
 import type { AgentJob, Runner } from '../apps/server/src/runner.js';
 import type { CheckCommand, JobResult, Repository, Run } from '../shared/types.js';
 class FakeRunner implements Runner {
-  ready = async () => ({ ok: true, docker: 'test', image: true, agents: { codex: 'test', claude: 'test' } });
+  ready = async () => ({ ok: true, docker: 'test', image: true, agents: { codex: 'test' } });
+  codexStatus = async () => ({ connected: true });
+  startCodexLogin = async () => ({ id: crypto.randomUUID() });
+  codexLogin = async (id: string) => ({ id, status: 'connected' as const });
   prepare = async () => 'a'.repeat(40);
   async agent(job: AgentJob): Promise<JobResult> {
     let object: unknown;
@@ -30,7 +33,7 @@ describe('workflow engine', () => {
   it('advances all development phases and stops at exact deployment approval', async () => {
     process.env.GITHUB_TOKEN = 'test-token';
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => { const url = String(input); if (url.includes('/pulls?')) return new Response('[]', { status: 200 }); if (url.endsWith('/pulls') && init?.method === 'POST') return Response.json({ number: 7, html_url: 'https://github.test/pr/7' }); if (url.includes('/check-runs')) return Response.json({ check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success', html_url: 'https://github.test/check' }] }); return new Response(null, { status: 204 }); }));
-    const store = await Store.open(); const policy = repository(); await store.put('repository', policy); const at = new Date().toISOString(); const run: Run = { id: crypto.randomUUID(), repositoryId: policy.id, prompt: 'Implement the requested safe behavior', backend: 'codex', reviewer: 'claude', status: 'queued', phase: 'planning', step: 'preflight', attempt: 0, createdAt: at, updatedAt: at, policy, context: [], baseline: [], gates: [], limits: { repairs: 3, minutes: 90, agentMinutes: 20 }, usage: { inputTokens: 0, outputTokens: 0, costUsd: null }, repeatedFailures: 0 }; await store.insertRun(run); const engine = new Engine(store, new FakeRunner(), 2, 0);
+    const store = await Store.open(); const policy = repository(); await store.put('repository', policy); const at = new Date().toISOString(); const run: Run = { id: crypto.randomUUID(), repositoryId: policy.id, prompt: 'Implement the requested safe behavior', backend: 'codex', reviewer: 'codex', status: 'queued', phase: 'planning', step: 'preflight', attempt: 0, createdAt: at, updatedAt: at, policy, context: [], baseline: [], gates: [], limits: { repairs: 3, minutes: 90, agentMinutes: 20 }, usage: { inputTokens: 0, outputTokens: 0, costUsd: null }, repeatedFailures: 0 }; await store.insertRun(run); const engine = new Engine(store, new FakeRunner(), 2, 0);
     for (let i = 0; i < 10; i++) await engine.runOnce();
     let current = (await store.getRun(run.id))!; expect(current.phase).toBe('deployment'); expect(current.step).toBe('remote-ci');
     await engine.runOnce(); current = (await store.getRun(run.id))!;
