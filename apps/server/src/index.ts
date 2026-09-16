@@ -1,0 +1,10 @@
+import { config, validateConfig } from './config.js';
+import { Store } from './store.js';
+import { HttpRunner } from './runner.js';
+import { Engine } from './engine.js';
+import { buildApi } from './api.js';
+validateConfig();
+const store = await Store.open(config.dataDir, config.databaseUrl); const runner = new HttpRunner(); const engine = new Engine(store, runner, config.maxActive); const app = await buildApi(store, engine, runner); engine.start();
+const shutdown = async () => { engine.stop(); await app.close(); await store.close(); process.exit(0); };
+process.on('SIGTERM', () => void shutdown()); process.on('SIGINT', () => void shutdown());
+await app.listen({ host: config.host, port: config.port });
