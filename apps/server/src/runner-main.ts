@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
 import Docker from 'dockerode';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
@@ -7,6 +8,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { backendSchema, commandSchema } from '../../../shared/types.js';
 import { safePath, redact, equalSecret } from './security.js';
+import { dockerLogText } from './docker-stream.js';
 const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 const docker = new Docker();
 const token = process.env.RUNNER_TOKEN || '';
@@ -29,8 +31,8 @@ async function execute(runId: string, cmd: string[], options: { env?: string[]; 
     const waitPromise = container.wait();
     const deadline = setTimeout(() => { timedOut = true; void container.kill().catch(() => undefined); }, (options.timeout || 600) * 1000);
     const status = await waitPromise; clearTimeout(deadline);
-    const stdout = (await container.logs({ stdout: true, stderr: false })).toString('utf8');
-    const stderr = (await container.logs({ stdout: false, stderr: true })).toString('utf8');
+    const stdout = dockerLogText(await container.logs({ stdout: true, stderr: false }));
+    const stderr = dockerLogText(await container.logs({ stdout: false, stderr: true }));
     return { exitCode: timedOut ? 124 : status.StatusCode, stdout: redact(stdout), stderr: redact(stderr), durationMs: Date.now() - started, files: {} as Record<string, string> };
   } finally { set.delete(container.id); await container.remove({ force: true }).catch(() => undefined); }
 }
