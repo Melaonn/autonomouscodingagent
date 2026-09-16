@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ripgre
  && useradd -m -u 10001 worker && mkdir -p /workspace /control && chown -R worker:worker /workspace /control
 ENV PATH="/opt/security/bin:/home/worker/.local/bin:${PATH}" HOME=/home/worker
 COPY docker/worker/sdlc-read-file docker/worker/sdlc-git-credential /usr/local/bin/
+COPY docker/worker/semgrep.yml /opt/sdlc/semgrep.yml
 RUN chmod 0755 /usr/local/bin/sdlc-*
 USER worker
 WORKDIR /workspace

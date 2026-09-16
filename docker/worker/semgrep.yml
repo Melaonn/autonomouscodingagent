@@ -1,0 +1,35 @@
+rules:
+  - id: javascript-dangerous-eval
+    message: Do not execute dynamically constructed JavaScript with eval.
+    severity: ERROR
+    languages: [javascript, typescript]
+    pattern: eval(...)
+    metadata:
+      category: security
+      cwe: CWE-95
+
+  - id: python-dangerous-eval
+    message: Do not execute dynamically constructed Python with eval.
+    severity: ERROR
+    languages: [python]
+    pattern: eval(...)
+    metadata:
+      category: security
+      cwe: CWE-95
+
+  - id: javascript-child-process-shell
+    message: Avoid passing dynamic data to a shell command.
+    severity: ERROR
+    languages: [javascript, typescript]
+    patterns:
+      - pattern-either:
+          - pattern: $CP.exec($COMMAND, ...)
+          - pattern: $CP.execSync($COMMAND, ...)
+      - pattern-inside: |
+          $CP = require('child_process')
+          ...
+      - pattern-not: $CP.exec('...', ...)
+      - pattern-not: $CP.execSync('...', ...)
+    metadata:
+      category: security
+      cwe: CWE-78

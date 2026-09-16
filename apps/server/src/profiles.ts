@@ -13,6 +13,6 @@ export const profiles: Record<string, CheckCommand[]> = {
     check('integration', 'integration', ['uv', 'run', '--no-sync', 'pytest', 'tests/integration', '--junitxml=.reports/integration.xml'], 'junit', '.reports/integration.xml'),
     check('dependencies', 'security', ['uv', 'run', '--no-sync', 'pip-audit', '--format=json'], 'pip-audit', '.reports/audit.json')],
 };
-const security = [check('sast', 'security', ['semgrep', 'scan', '--config=p/security-audit', '--json', '--output=.reports/semgrep.json'], 'semgrep', '.reports/semgrep.json'),
+const security = [check('sast', 'security', ['semgrep', 'scan', '--config=/opt/sdlc/semgrep.yml', '--json', '--output=.reports/semgrep.json'], 'semgrep', '.reports/semgrep.json'),
   check('secrets', 'security', ['gitleaks', 'dir', '.', '--report-format=json', '--report-path=.reports/gitleaks.json'], 'gitleaks', '.reports/gitleaks.json')];
 for (const profile of Object.values(profiles)) profile.push(...security);
