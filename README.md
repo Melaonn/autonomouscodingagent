@@ -18,13 +18,15 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
 
 2. Sign in to the dashboard, connect the GitHub token, and add the repository. Review its commands, company standards, required GitHub checks, and optional deployment workflow.
 
-3. Connect the harness to Codex and enable lifecycle routing in the project:
+3. Connect the harness to your existing Codex app and CLI configuration:
 
    ```powershell
-   .\connect-codex.ps1 -ProjectPath "C:\path\to\your\project"
+   .\connect-codex.ps1
    ```
 
-4. Restart the Codex app or open a fresh Codex CLI session in that project. Work as usual:
+   This writes one managed instruction block under your Codex home directory. It does not change the project checkout.
+
+4. Restart the Codex app or open a fresh Codex CLI session in your project. Work as usual:
 
    > Build an audit history page with filtering and pagination.
 

@@ -1102,8 +1102,8 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
             <span className="eyebrow">CODING AGENT</span>
             <h2>Use your Codex app or CLI</h2>
             <p>
-              Run <code>.\connect-codex.ps1 -ProjectPath "C:\path\to\project"</code> once. There is no second Codex
-              login, clone, or Docker worker.
+              Run <code>.\connect-codex.ps1</code> once. It updates your Codex configuration without changing the
+              project. There is no second Codex login, clone, or Docker worker.
             </p>
           </div>
           <div>

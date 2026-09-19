@@ -51,18 +51,20 @@ $filtered.Add('[mcp_servers.sdlc.env]')
 $filtered.Add("SDLC_CHAT_URL = $(ConvertTo-TomlString $ServerUrl)")
 [System.IO.File]::WriteAllLines($configPath, $filtered, [System.Text.UTF8Encoding]::new($false))
 
+$instructionsPath = Join-Path $codexHome 'AGENTS.md'
+$instructions = Get-Content -LiteralPath (Join-Path $harnessRoot 'docs/codex-project-instructions.md') -Raw
+$existing = if (Test-Path -LiteralPath $instructionsPath) { Get-Content -LiteralPath $instructionsPath -Raw } else { '' }
+if (-not $existing.Contains('<!-- sdlc-chat-integration -->')) {
+  Add-Content -LiteralPath $instructionsPath -Value ("`n" + $instructions) -Encoding utf8
+}
+Write-Output "Enabled automatic SDLC routing in $instructionsPath"
+
 if ($ProjectPath) {
   $projectRoot = (Resolve-Path -LiteralPath $ProjectPath).Path
   if (-not (Test-Path -LiteralPath (Join-Path $projectRoot '.git'))) {
     throw 'ProjectPath must be the root of a Git checkout.'
   }
-  $instructionsPath = Join-Path $projectRoot 'AGENTS.md'
-  $instructions = Get-Content -LiteralPath (Join-Path $harnessRoot 'docs/codex-project-instructions.md') -Raw
-  $existing = if (Test-Path -LiteralPath $instructionsPath) { Get-Content -LiteralPath $instructionsPath -Raw } else { '' }
-  if (-not $existing.Contains('<!-- sdlc-chat-integration -->')) {
-    Add-Content -LiteralPath $instructionsPath -Value ("`n" + $instructions) -Encoding utf8
-  }
-  Write-Output "Enabled automatic SDLC routing in $instructionsPath"
+  Write-Output "Validated native project checkout at $projectRoot"
 }
 
 Write-Output 'Codex is connected. Restart the Codex app or open a fresh CLI session.'

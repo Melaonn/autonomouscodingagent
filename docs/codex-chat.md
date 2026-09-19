@@ -1,12 +1,12 @@
 # Using the harness from Codex
 
-Start the local service with `start.ps1`, connect GitHub and a repository in the dashboard, then register the MCP bridge and project instructions once:
+Start the local service with `start.ps1`, connect GitHub and a repository in the dashboard, then register the MCP bridge and user-level Codex instructions once:
 
 ```powershell
-.\connect-codex.ps1 -ProjectPath "C:\path\to\your\project"
+.\connect-codex.ps1
 ```
 
-Restart the Codex app or open a fresh CLI session so it loads the `sdlc` tools. Open the existing project and give a normal request. You do not need to copy policies into the prompt or start work from the dashboard.
+The connector updates `~/.codex/config.toml` and a managed block in `~/.codex/AGENTS.md`; it does not edit the project. Restart the Codex app or open a fresh CLI session so it loads the `sdlc` tools. Open the existing project and give a normal request. You do not need to copy policies into the prompt or start work from the dashboard.
 
 The current conversation will inspect the checkout, start a governed run, and move through planning, requirements, design, implementation, verification, repair, and self-review. It will use the same files and local changes you see. The dashboard at `http://localhost:4310` is an observer and approval surface.
 
