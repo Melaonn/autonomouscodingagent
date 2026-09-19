@@ -14,9 +14,9 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
    .\start.ps1
    ```
 
-   The first run creates `.env`, installs dependencies, builds the app, opens `http://localhost:4310`, and prints the local administrator password. Keep this terminal open.
+   The first run creates `.env`, installs dependencies, builds the app, and opens `http://localhost:4310`. Local access signs in automatically because the server listens only on your computer. Keep this terminal open.
 
-2. Sign in to the dashboard, connect the GitHub token, and add the repository. Review its commands, company standards, required GitHub checks, and optional deployment workflow.
+2. In the dashboard, connect the GitHub token and add the repository. Review its commands, company standards, required GitHub checks, and optional deployment workflow.
 
 3. Connect the harness to your existing Codex app and CLI configuration:
 

@@ -9,7 +9,6 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createChatServer } from '../apps/server/src/chat-mcp.js';
 import { ChatClient } from '../apps/server/src/chat-client.js';
 import { buildApi } from '../apps/server/src/api.js';
-import { config } from '../apps/server/src/config.js';
 import { RunService } from '../apps/server/src/run-service.js';
 import { Store } from '../apps/server/src/store.js';
 import { repositorySchema, type Repository } from '../shared/types.js';
@@ -63,15 +62,16 @@ describe('Codex chat integration', () => {
     };
     await store.put('repository', repository);
     const runs = new RunService(store);
-    const originalPassword = config.adminPassword;
-    config.adminPassword = 'test-local-chat-password';
-    cleanup.push(async () => {
-      config.adminPassword = originalPassword;
-    });
     const app = await buildApi(store, runs);
     cleanup.push(() => app.close());
     const url = await app.listen({ host: '127.0.0.1', port: 0 });
-    const api = new ChatClient(url, config.adminPassword);
+    const removedPasswordLogin = await fetch(`${url}/auth/password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'unused' }),
+    });
+    expect(removedPasswordLogin.status).toBe(404);
+    const api = new ChatClient(url);
     const server = createChatServer(api);
     cleanup.push(() => server.close());
     const client = new Client({ name: 'test-codex', version: '1' });
@@ -175,17 +175,21 @@ describe('Codex chat integration', () => {
     expect(protectedStart.data.error).toContain('Protected policy path');
   }, 30_000);
 
-  it('rejects external hosts and redirects before leaking a password, and does not retry failed mutations', async () => {
-    expect(() => new ChatClient('https://example.com', 'secret')).toThrow('loopback');
-    expect(() => new ChatClient('http://127.0.0.1:4310/path', 'secret')).toThrow('loopback');
+  it('rejects external hosts and redirects, and does not retry failed mutations', async () => {
+    expect(() => new ChatClient('https://example.com')).toThrow('loopback');
+    expect(() => new ChatClient('http://127.0.0.1:4310/path')).toThrow('loopback');
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(new Response('{}', { headers: { 'set-cookie': 'sdlc_session=test; HttpOnly; Path=/' } }))
-      .mockResolvedValueOnce(Response.json({ csrf: 'test-csrf' }))
+      .mockResolvedValueOnce(
+        Response.json(
+          { user: { login: 'local-operator', role: 'admin' }, csrf: 'test-csrf' },
+          { headers: { 'set-cookie': 'sdlc_session=test; HttpOnly; Path=/' } },
+        ),
+      )
       .mockResolvedValueOnce(Response.json({ error: 'private internal secret' }, { status: 500 }));
-    const api = new ChatClient('http://127.0.0.1:4310', 'private-password');
+    const api = new ChatClient('http://127.0.0.1:4310');
     await expect(api.request('/api/runs', {})).rejects.toThrow('Harness request failed (500)');
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     for (const [, init] of fetchMock.mock.calls) expect(init?.redirect).toBe('error');
   });
 });

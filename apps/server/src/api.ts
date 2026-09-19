@@ -45,7 +45,7 @@ const error = (statusCode: number, message: string) => Object.assign(new Error(m
 const roles: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
 export async function buildApi(store: Store, runs: RunService) {
   const app = Fastify({
-    logger: { redact: ['req.headers.authorization', 'req.headers.cookie', 'body.token', 'body.password'] },
+    logger: { redact: ['req.headers.authorization', 'req.headers.cookie', 'body.token'] },
     bodyLimit: 20 * 1024 * 1024,
   });
   await app.register(cookie, { secret: config.sessionSecret });
@@ -96,8 +96,8 @@ export async function buildApi(store: Store, runs: RunService) {
       path: '/',
       maxAge: 43200,
     });
+    return { user, csrf };
   };
-  const loginAttempts = new Map<string, { count: number; resetAt: number }>();
   app.get('/auth/github', async (_req, reply) => {
     const state = nonce();
     reply.setCookie('oauth_state', state, {
@@ -124,38 +124,17 @@ export async function buildApi(store: Store, runs: RunService) {
     reply.clearCookie('oauth_state', { path: '/auth' });
     return reply.redirect(config.publicUrl);
   });
-  app.post('/auth/dev', async (req, reply) => {
-    if (!config.devToken || !['127.0.0.1', '::1'].includes(req.ip)) throw error(404, 'Development login unavailable');
-    const body = z.object({ token: z.string() }).parse(req.body);
-    if (!equalSecret(body.token, config.devToken)) throw error(401, 'Token rejected');
-    await setSession(reply, { login: 'local-operator', role: 'admin' });
-    return { ok: true };
-  });
-  app.post('/auth/password', async (req, reply) => {
-    const configured = config.adminPassword || config.devToken;
-    if (!configured) throw error(404, 'Password login unavailable');
-    if (!config.adminPassword && !['127.0.0.1', '::1'].includes(req.ip)) throw error(404, 'Password login unavailable');
-    const now = Date.now();
-    const attempts = loginAttempts.get(req.ip);
-    if (attempts && attempts.resetAt > now && attempts.count >= 5)
-      throw error(429, 'Too many login attempts; try again later');
-    const { password } = z.object({ password: z.string() }).parse(req.body);
-    if (!equalSecret(password, configured)) {
-      const current = attempts && attempts.resetAt > now ? attempts : { count: 0, resetAt: now + 15 * 60_000 };
-      current.count += 1;
-      loginAttempts.set(req.ip, current);
-      throw error(401, 'Password rejected');
+  app.get('/api/me', async (req, reply) => {
+    if (!req.user && !config.production && ['127.0.0.1', '::1'].includes(req.ip)) {
+      const session = await setSession(reply, { login: 'local-operator', role: 'admin' });
+      return { ...session, githubOAuth: !!process.env.GITHUB_CLIENT_ID };
     }
-    loginAttempts.delete(req.ip);
-    await setSession(reply, { login: config.adminPassword ? 'administrator' : 'local-operator', role: 'admin' });
-    return { ok: true };
+    return {
+      user: req.user || null,
+      csrf: req.csrf || '',
+      githubOAuth: !!process.env.GITHUB_CLIENT_ID,
+    };
   });
-  app.get('/api/me', async (req) => ({
-    user: req.user || null,
-    csrf: req.csrf || '',
-    githubOAuth: !!process.env.GITHUB_CLIENT_ID,
-    passwordLogin: !!(config.adminPassword || config.devToken),
-  }));
   app.post('/api/logout', async (req, reply) => {
     if (req.sessionId) await store.deleteSession(req.sessionId);
     reply.clearCookie('sdlc_session', { path: '/' });

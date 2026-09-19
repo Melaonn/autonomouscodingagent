@@ -1,15 +1,10 @@
 param(
   [string]$ProjectPath,
-  [string]$EnvironmentFile = '.env',
   [string]$ServerUrl = 'http://127.0.0.1:4310'
 )
 $ErrorActionPreference = 'Stop'
 $harnessRoot = $PSScriptRoot
 $nodePath = (Get-Command node -ErrorAction Stop).Source
-$environmentPath = Join-Path $harnessRoot $EnvironmentFile
-if (-not (Test-Path -LiteralPath $environmentPath -PathType Leaf)) {
-  throw 'Run start.ps1 once so the local harness environment exists.'
-}
 
 Push-Location $harnessRoot
 try {
@@ -40,7 +35,7 @@ function ConvertTo-TomlString([string]$Value) {
   return '"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 $chatMain = Join-Path $harnessRoot 'apps/server/dist/chat-main.js'
-$mcpArguments = @($chatMain, $harnessRoot, $environmentPath) | ForEach-Object { ConvertTo-TomlString $_ }
+$mcpArguments = @(ConvertTo-TomlString $chatMain)
 if ($filtered.Count) { $filtered.Add('') }
 $filtered.Add('[mcp_servers.sdlc]')
 $filtered.Add("command = $(ConvertTo-TomlString $nodePath)")
@@ -53,7 +48,11 @@ $filtered.Add("SDLC_CHAT_URL = $(ConvertTo-TomlString $ServerUrl)")
 
 $instructionsPath = Join-Path $codexHome 'AGENTS.md'
 $instructions = Get-Content -LiteralPath (Join-Path $harnessRoot 'docs/codex-project-instructions.md') -Raw
-$existing = if (Test-Path -LiteralPath $instructionsPath) { Get-Content -LiteralPath $instructionsPath -Raw } else { '' }
+$existing = ''
+if (Test-Path -LiteralPath $instructionsPath) {
+  $existing = [string](Get-Content -LiteralPath $instructionsPath -Raw)
+}
+if ($null -eq $existing) { $existing = '' }
 if (-not $existing.Contains('<!-- sdlc-chat-integration -->')) {
   Add-Content -LiteralPath $instructionsPath -Value ("`n" + $instructions) -Encoding utf8
 }

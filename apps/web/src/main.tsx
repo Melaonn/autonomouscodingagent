@@ -17,7 +17,6 @@ import {
   FileCheck2,
   GitBranch,
   Github,
-  KeyRound,
   LayoutDashboard,
   LoaderCircle,
   LogOut,
@@ -34,7 +33,7 @@ import {
 } from 'lucide-react';
 import type { Document, Integration, Repository, Run, User } from '../../../shared/types.ts';
 import './styles.css';
-type Me = { user: User | null; csrf: string; githubOAuth: boolean; passwordLogin: boolean };
+type Me = { user: User | null; csrf: string; githubOAuth: boolean };
 type RunBundle = {
   run: Run;
   events: { id: number; time: string; kind: string; message: string }[];
@@ -66,18 +65,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 const seven = ['planning', 'requirements', 'design', 'coding', 'testing', 'deployment', 'maintenance'];
-function Login({ me, refresh }: { me: Me; refresh: () => void }) {
-  const [token, setToken] = useState('');
-  const [error, setError] = useState('');
-  async function login(e: React.FormEvent) {
-    e.preventDefault();
-    try {
-      await api('/auth/password', { method: 'POST', body: JSON.stringify({ password: token }) });
-      refresh();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
+function Login({ me }: { me: Me }) {
   return (
     <main className="login-shell">
       <section className="login-card">
@@ -98,28 +86,6 @@ function Login({ me, refresh }: { me: Me; refresh: () => void }) {
           <a className="button primary wide" href="/auth/github">
             <Github size={17} /> Continue with GitHub
           </a>
-        )}
-        {me.passwordLogin && (
-          <form onSubmit={login} className="dev-login">
-            <label>Administrator password</label>
-            <div className="input-action">
-              <KeyRound size={16} />
-              <input
-                aria-label="Administrator password"
-                type="password"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder="Administrator password"
-              />
-              <button>Sign in</button>
-            </div>
-          </form>
-        )}
-        {error && (
-          <p className="error">
-            <AlertTriangle size={15} />
-            {error}
-          </p>
         )}
         <p className="fine-print">
           Access is restricted to configured team members. Every approval and policy change is audited.
@@ -1394,7 +1360,7 @@ function App() {
         <LoaderCircle className="spin" />
       </div>
     );
-  if (!me.user) return <Login me={me} refresh={loadMe} />;
+  if (!me.user) return <Login me={me} />;
   async function logout() {
     await api('/api/logout', { method: 'POST' });
     csrf = '';

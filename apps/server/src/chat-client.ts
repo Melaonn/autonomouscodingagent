@@ -1,14 +1,11 @@
-/** Local-only API adapter. Credentials and cookies never enter tool results. */
+/** Local-only API adapter. Session cookies never enter tool results. */
 export class ChatClient {
   private cookie = '';
   private csrf = '';
   private loginTask?: Promise<void>;
   readonly url: string;
 
-  constructor(
-    url: string,
-    private password: string,
-  ) {
+  constructor(url: string) {
     const parsed = new URL(url);
     if (
       parsed.protocol !== 'http:' ||
@@ -25,28 +22,19 @@ export class ChatClient {
   }
 
   private async login() {
-    if (!this.password) throw new Error('Harness login is missing. Complete local setup first.');
-    const response = await fetch(`${this.url}/auth/password`, {
-      method: 'POST',
+    const response = await fetch(`${this.url}/api/me`, {
       redirect: 'error',
       signal: AbortSignal.timeout(15_000),
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ password: this.password }),
     });
-    if (!response.ok) throw new Error(`Harness login failed (${response.status}). Check your local setup.`);
+    if (!response.ok) throw new Error(`Harness session failed (${response.status}). Check your local setup.`);
     this.cookie =
       response.headers
         .getSetCookie()
         .find((value) => value.startsWith('sdlc_session='))
         ?.split(';')[0] || '';
-    if (!this.cookie) throw new Error('Harness did not establish a session.');
-    const me = await fetch(`${this.url}/api/me`, {
-      headers: { cookie: this.cookie },
-      redirect: 'error',
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!me.ok) throw new Error('Unable to read harness session.');
-    this.csrf = ((await me.json()) as { csrf: string }).csrf;
+    const me = (await response.json()) as { user?: unknown; csrf?: string };
+    this.csrf = me.csrf || '';
+    if (!this.cookie || !me.user || !this.csrf) throw new Error('Harness did not establish a local session.');
   }
 
   async request<T>(path: string, body?: unknown): Promise<T> {

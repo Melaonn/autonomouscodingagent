@@ -1,8 +1,6 @@
-param([string]$AdminPassword)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $environmentFile = Join-Path $root '.env'
-$generatedPassword = $false
 
 function New-Secret {
   $bytes = New-Object byte[] 32
@@ -14,21 +12,21 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw 'Install Node
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { throw 'npm was not found on PATH.' }
 
 if (-not (Test-Path -LiteralPath $environmentFile)) {
-  if (-not $AdminPassword) {
-    $AdminPassword = "sdlc-$((New-Secret).Substring(0, 20))"
-    $generatedPassword = $true
-  }
-  if ($AdminPassword.Length -lt 16) { throw 'Administrator password must have at least 16 characters.' }
   @(
     'PORT=4310'
     'HOST=127.0.0.1'
     'PUBLIC_URL=http://localhost:4310'
     'COOKIE_SECURE=false'
-    "ADMIN_PASSWORD=$AdminPassword"
     "SESSION_SECRET=$(New-Secret)"
     'DATA_DIR=.runtime'
     'GITHUB_TOKEN='
   ) | Set-Content -LiteralPath $environmentFile -Encoding Ascii
+}
+
+function Remove-EnvironmentValue([string]$Name) {
+  $pattern = "^$([regex]::Escape($Name))="
+  $lines = Get-Content -LiteralPath $environmentFile | Where-Object { $_ -notmatch $pattern }
+  Set-Content -LiteralPath $environmentFile -Value $lines -Encoding Ascii
 }
 
 function Set-EnvironmentValue([string]$Name, [string]$Value) {
@@ -50,11 +48,8 @@ Set-EnvironmentValue 'HOST' '127.0.0.1'
 Set-EnvironmentValue 'PUBLIC_URL' 'http://localhost:4310'
 Set-EnvironmentValue 'COOKIE_SECURE' 'false'
 Set-EnvironmentValue 'DATA_DIR' '.runtime'
-if (-not (Select-String -LiteralPath $environmentFile -Pattern '^(ADMIN_PASSWORD|DEV_AUTH_TOKEN)=.{16,}$' -Quiet)) {
-  $AdminPassword = "sdlc-$((New-Secret).Substring(0, 20))"
-  Set-EnvironmentValue 'ADMIN_PASSWORD' $AdminPassword
-  $generatedPassword = $true
-}
+Remove-EnvironmentValue 'ADMIN_PASSWORD'
+Remove-EnvironmentValue 'DEV_AUTH_TOKEN'
 if (-not (Select-String -LiteralPath $environmentFile -Pattern '^SESSION_SECRET=.{32,}$' -Quiet)) {
   Set-EnvironmentValue 'SESSION_SECRET' (New-Secret)
 }
@@ -67,7 +62,6 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Harness build failed.' }
   Start-Process 'http://localhost:4310'
   Write-Output 'SDLC Control Plane is ready at http://localhost:4310'
-  if ($generatedPassword) { Write-Output "Administrator password: $AdminPassword" }
   Write-Output 'Keep this window open while using the harness. Press Ctrl+C to stop it.'
   npm start
 } finally {

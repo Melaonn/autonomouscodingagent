@@ -920,18 +920,6 @@ textarea::placeholder {
   opacity: 0.75;
 }
 
-.input-action {
-  display: flex;
-  gap: 8px;
-}
-.input-action input {
-  flex: 1;
-  min-width: 0;
-}
-.input-action .button {
-  flex: none;
-}
-
 .inline-secret {
   display: flex;
   gap: 8px;
@@ -941,17 +929,6 @@ textarea::placeholder {
 .inline-secret input {
   flex: 1;
   min-width: 220px;
-}
-
-.dev-login {
-  display: grid;
-  gap: 7px;
-  margin-top: 20px;
-}
-.dev-login label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink-2);
 }
 
 .error {
