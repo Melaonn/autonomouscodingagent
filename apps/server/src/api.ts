@@ -12,6 +12,7 @@ import {
   planSchema,
   repositorySchema,
   reviewSchema,
+  runModeSchema,
   workspaceStateSchema,
   type Document,
   type Integration,
@@ -271,12 +272,13 @@ export async function buildApi(store: Store, runs: RunService) {
       .object({
         repositoryId: z.string().uuid(),
         prompt: z.string().min(10).max(100000),
+        mode: runModeSchema.default('delivery'),
         workspace: workspaceStateSchema,
       })
       .parse(req.body);
     const repository = await store.get<Repository>('repository', body.repositoryId);
     if (!repository) throw error(404, 'Repository not found');
-    return runs.create(repository, body.prompt, body.workspace, actor.login);
+    return runs.create(repository, body.prompt, body.workspace, body.mode, actor.login);
   });
   app.post('/api/runs/:id/plan', async (req) => {
     const actor = requireRole(req, 'operator');
@@ -310,6 +312,7 @@ export async function buildApi(store: Store, runs: RunService) {
       stderr: z.string().max(300000),
       durationMs: z.number().nonnegative(),
       files: z.record(z.string(), z.string().max(300000)),
+      cached: z.boolean().optional(),
     });
     const body = z
       .object({

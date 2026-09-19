@@ -22,9 +22,13 @@ The current Codex conversation is the only coding agent. It keeps the repository
 
 The run starts from the current commit and records whether local modifications already exist. Codex submits structured planning, requirements, and design documents in order. Requirements with an unresolved stakeholder decision enter `needs_input`; the answer becomes part of the durable contract.
 
-During implementation, progress events make the current activity visible in the dashboard. Verification runs every configured command using argument arrays rather than model-generated shell strings. The controller parses each result according to its declared format, such as Vitest, Playwright, JUnit, npm audit, or pip-audit. It rejects missing commands, empty test runs, malformed reports, failed findings, timeouts, and results tied to an older policy or workspace tree.
+During implementation, progress events make the current activity visible in the dashboard. Verification also emits standard MCP progress notifications so a supporting Codex client can show each gate as it starts and finishes. It runs configured commands using argument arrays rather than model-generated shell strings. Setup can be reused only when dependency manifests, Node runtime, platform, and architecture match the recorded fingerprint. After setup, independent gates run with a concurrency limit of three.
+
+The controller parses each result according to its declared format, such as Vitest, Playwright, JUnit, npm audit, pip-audit, Semgrep, or Gitleaks-compatible evidence. The bundled baseline scanners inspect tracked and new candidate source files for high-confidence credentials and dangerous execution or TLS patterns; repository policy can add stronger company scanners. The controller rejects missing commands, empty test runs, malformed reports, failed findings, timeouts, and results tied to an older policy or workspace tree.
 
 A failed gate changes the run to `repairing`. Codex receives the concrete command output in the same conversation, fixes the checkout, and verifies again. Passing gates lead to a structured self-review against every acceptance criterion. Critical or high findings also return to repair. The verification attempt limit prevents endless loops while preserving all evidence.
+
+Runs default to delivery mode. Codex may select validation mode only for an explicitly non-mutating audit, smoke test, or verification request. After passing gates and review, a validation run completes only when its Git tree still matches the starting tree; delivery runs continue to branch, pull request, CI, and deployment handling.
 
 The Git tree digest is computed with a temporary Git index. This includes tracked edits, staged edits, deletions, and untracked files without changing the developer's real index. Committing identical content keeps the same tree digest, so the controller can prove that the pushed commit contains the files that passed local verification.
 

@@ -6,6 +6,7 @@ import {
   phases,
   planSchema,
   reviewSchema,
+  runModeSchema,
   type Artifact,
   type Event,
   type Repository,
@@ -22,6 +23,8 @@ const runInput = { runId: z.string().uuid() };
 const active = new Set(['running', 'repairing']);
 
 function nextAction(run: Run) {
+  if (run.status === 'completed' && run.step === 'validated')
+    return 'Report that validation completed without workspace changes or publication, with its recorded evidence.';
   if (run.status === 'needs_input') return 'Ask the user the exact question, then call sdlc_answer.';
   if (run.status === 'awaiting_approval')
     return 'Ask the user to approve or reject the exact deployment in the local dashboard.';
@@ -46,6 +49,7 @@ function summary(run: Run) {
     id: run.id,
     repository: `${run.policy.owner}/${run.policy.repo}`,
     prompt: run.prompt,
+    mode: run.mode || 'delivery',
     status: run.status,
     phase: run.phase,
     step: run.step,
@@ -127,14 +131,15 @@ export function createChatServer(api: ChatApi) {
     'sdlc_start',
     {
       description:
-        'Start a governed SDLC run in the current local checkout. Pass the absolute repository root and the complete user request. No clone or second agent is created.',
+        'Start a governed SDLC run in the current local checkout. Use delivery for change requests and validation only for explicitly non-mutating audits or smoke tests. Pass the absolute repository root and complete user request. No clone or second agent is created.',
       inputSchema: {
         workspaceRoot: z.string().min(1),
         prompt: z.string().min(10).max(100000),
+        mode: runModeSchema.default('delivery'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ workspaceRoot, prompt }) =>
+    ({ workspaceRoot, prompt, mode }) =>
       protect(async () => {
         const workspace = await inspectWorkspace(workspaceRoot);
         const repositories = await api.request<Repository[]>('/api/repositories');
@@ -151,6 +156,7 @@ export function createChatServer(api: ChatApi) {
         const created = await api.request<{ run: Run; reused: boolean }>('/api/runs', {
           repositoryId: repository.id,
           prompt,
+          mode,
           workspace: {
             branch: workspace.branch,
             headSha: workspace.headSha,
@@ -240,21 +246,61 @@ export function createChatServer(api: ChatApi) {
       inputSchema: { ...runInput, workspaceRoot: z.string().min(1) },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ runId, workspaceRoot }) =>
+    ({ runId, workspaceRoot }, extra) =>
       protect(async () => {
         const detail = await api.request<Detail>(`/api/runs/${runId}`);
         const workspace = await inspectWorkspace(workspaceRoot);
         assertRepository(workspace, detail.run);
         assertProtectedPaths(workspace, detail.run.policy);
-        const results = [];
-        for (const command of detail.run.policy.checks) {
-          await api.request(`/api/runs/${runId}/progress`, {
-            phase: 'testing',
-            step: command.id,
-            message: `Running ${command.label}`,
-          });
-          results.push({ commandId: command.id, result: await executeCheck(workspace.root, command) });
+        const checks = detail.run.policy.checks;
+        const results: { commandId: string; result: Awaited<ReturnType<typeof executeCheck>> }[] = new Array(
+          checks.length,
+        );
+        let notificationStep = 0;
+        const notify = async (message: string) => {
+          const progressToken = extra._meta?.progressToken;
+          if (progressToken === undefined) return;
+          notificationStep += 1;
+          await extra
+            .sendNotification({
+              method: 'notifications/progress',
+              params: { progressToken, progress: notificationStep, total: checks.length * 2, message },
+            })
+            .catch(() => undefined);
+        };
+        let eventQueue = Promise.resolve<unknown>(undefined);
+        const progress = (step: string, message: string) => {
+          eventQueue = eventQueue.then(() =>
+            api.request(`/api/runs/${runId}/progress`, { phase: 'testing', step, message }),
+          );
+          return eventQueue;
+        };
+        const runCheck = async (index: number) => {
+          const command = checks[index];
+          await notify(`Starting ${command.label}`);
+          await progress(command.id, `Running ${command.label}`);
+          const checkResult = await executeCheck(workspace.root, command);
+          results[index] = { commandId: command.id, result: checkResult };
+          const outcome = checkResult.exitCode === 0 ? 'passed' : 'failed';
+          const cacheNote = checkResult.cached ? ' using cached dependencies' : '';
+          const message = `${command.label} ${outcome}${cacheNote} in ${(checkResult.durationMs / 1000).toFixed(1)}s`;
+          await progress(command.id, message);
+          await notify(message);
+        };
+        for (const index of checks.map((_, index) => index).filter((index) => checks[index].kind === 'setup')) {
+          await runCheck(index);
         }
+        const pending = checks.map((_, index) => index).filter((index) => checks[index].kind !== 'setup');
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(3, pending.length) }, async () => {
+          while (cursor < pending.length) {
+            const index = pending[cursor];
+            cursor += 1;
+            await runCheck(index);
+          }
+        });
+        await Promise.all(workers);
+        await eventQueue;
         const verified = await inspectWorkspace(workspace.root);
         assertProtectedPaths(verified, detail.run.policy);
         if (verified.digest !== workspace.digest)

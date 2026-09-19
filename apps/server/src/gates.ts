@@ -12,6 +12,7 @@ export function evaluate(command: CheckCommand, result: JobResult, run: Run): Ga
     durationMs: result.durationMs,
     tests: null,
     findings: [],
+    cached: result.cached,
   };
   try {
     if (result.exitCode < 0 || result.exitCode === 124 || result.exitCode === 127) {

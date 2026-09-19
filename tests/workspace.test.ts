@@ -51,4 +51,76 @@ describe('native workspace evidence', () => {
     expect(committed.digest).toBe(candidate.digest);
     expect(committed.dirty).toBe(false);
   });
+
+  it('reuses npm dependencies only while manifests and runtime inputs are unchanged', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sdlc-install-cache-'));
+    directories.push(root);
+    await runFile('git', ['init', '-b', 'main'], { cwd: root });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'cache-test', version: '1.0.0' }));
+    await writeFile(
+      join(root, 'package-lock.json'),
+      JSON.stringify({
+        name: 'cache-test',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        requires: true,
+        packages: { '': { name: 'cache-test', version: '1.0.0' } },
+      }),
+    );
+    const command = {
+      id: 'install',
+      label: 'install',
+      argv: ['npm', 'ci'],
+      required: true,
+      kind: 'setup' as const,
+      report: 'exit' as const,
+      reportPath: '',
+      timeoutSeconds: 60,
+    };
+    expect((await executeCheck(root, command)).cached).toBeUndefined();
+    expect((await executeCheck(root, command)).cached).toBe(true);
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'cache-test', version: '1.0.1' }));
+    await writeFile(
+      join(root, 'package-lock.json'),
+      JSON.stringify({
+        name: 'cache-test',
+        version: '1.0.1',
+        lockfileVersion: 3,
+        requires: true,
+        packages: { '': { name: 'cache-test', version: '1.0.1' } },
+      }),
+    );
+    expect((await executeCheck(root, command)).cached).toBeUndefined();
+  }, 30_000);
+
+  it('returns machine-readable secret and static security findings for tracked source', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sdlc-security-scan-'));
+    directories.push(root);
+    await runFile('git', ['init', '-b', 'main'], { cwd: root });
+    const accessKey = ['AKIA', 'ABCDEFGHIJKLMNOP'].join('');
+    const dynamicExecution = ['ev', "al('unsafe');"].join('');
+    await writeFile(join(root, 'unsafe.js'), `const key = '${accessKey}';\n${dynamicExecution}\n`);
+    const secrets = await executeCheck(root, {
+      id: 'secrets',
+      label: 'secrets',
+      argv: ['@sdlc/security', 'secrets'],
+      required: true,
+      kind: 'security',
+      report: 'gitleaks',
+      reportPath: '.reports/secrets.json',
+      timeoutSeconds: 30,
+    });
+    const sast = await executeCheck(root, {
+      id: 'sast',
+      label: 'sast',
+      argv: ['@sdlc/security', 'sast'],
+      required: true,
+      kind: 'security',
+      report: 'semgrep',
+      reportPath: '.reports/sast.json',
+      timeoutSeconds: 30,
+    });
+    expect(JSON.parse(secrets.files['.reports/secrets.json'])[0].RuleID).toBe('aws-access-key');
+    expect(JSON.parse(sast.files['.reports/sast.json']).results[0].check_id).toBe('dynamic-eval');
+  });
 });

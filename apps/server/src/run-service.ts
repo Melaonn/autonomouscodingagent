@@ -7,6 +7,7 @@ import type {
   Repository,
   Review,
   Run,
+  RunMode,
   TaskContract,
   WorkspaceState,
 } from '../../../shared/types.js';
@@ -77,7 +78,7 @@ export class RunService {
     if (!activeStatuses.has(run.status)) failure(`Run is ${run.status} and cannot accept lifecycle updates`);
   }
 
-  async create(repository: Repository, prompt: string, workspace: WorkspaceState, actor: string) {
+  async create(repository: Repository, prompt: string, workspace: WorkspaceState, mode: RunMode, actor: string) {
     const existing = (await this.store.runs()).find(
       (run) => run.repositoryId === repository.id && activeStatuses.has(run.status),
     );
@@ -120,6 +121,7 @@ export class RunService {
       repositoryId: repository.id,
       prompt,
       backend: 'codex',
+      mode,
       status: 'running',
       phase: 'planning',
       step: 'planning',
@@ -308,6 +310,21 @@ export class RunService {
         ...unresolved.map((criterion) => `${criterion.id}: acceptance evidence is unresolved`),
       ].join('\n');
       return this.record(run, actor, 'run.review', 'review-failed', run.blocker);
+    }
+    if (run.mode === 'validation') {
+      if (run.candidateDigest !== run.workspace.digest)
+        failure('Validation-only runs must leave the workspace unchanged; start a delivery run for code changes');
+      run.status = 'completed';
+      run.phase = 'maintenance';
+      run.step = 'validated';
+      run.blocker = undefined;
+      return this.record(
+        run,
+        actor,
+        'run.review',
+        'validation-completed',
+        'Validation completed with no workspace changes',
+      );
     }
     run.phase = 'deployment';
     run.step = 'publish';

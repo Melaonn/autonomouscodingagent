@@ -8,7 +8,7 @@ Start the local service with `start.ps1`, connect GitHub and a repository in the
 
 The connector updates `~/.codex/config.toml` and a managed block in `~/.codex/AGENTS.md`; it does not edit the project. Restart the Codex app or open a fresh CLI session so it loads the `sdlc` tools. Open the existing project and give a normal request. You do not need to copy policies into the prompt or start work from the dashboard.
 
-The current conversation will inspect the checkout, start a governed run, and move through planning, requirements, design, implementation, verification, repair, and self-review. It will use the same files and local changes you see. The dashboard at `http://localhost:4310` is an observer and approval surface.
+The current conversation will inspect the checkout, start a governed delivery or explicit validation run, and move through planning, requirements, design, implementation, verification, repair, and self-review. It will use the same files and local changes you see. Verification progress appears in supporting Codex clients and is always recorded in the dashboard at `http://localhost:4310`, which remains the observer and approval surface.
 
 When local checks and review pass, Codex creates a feature branch, commits the verified tree, and pushes it. The control plane follows the pull request and required CI. If a deployment is configured, approve or reject it in the dashboard. Codex cannot approve its own deployment.
 

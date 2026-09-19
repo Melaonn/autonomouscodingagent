@@ -65,6 +65,75 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 const seven = ['planning', 'requirements', 'design', 'coding', 'testing', 'deployment', 'maintenance'];
+function shortRunTitle(run: Run) {
+  const value = (run.contract?.summary || run.prompt).replace(/\s+/g, ' ').trim();
+  return value.length > 96 ? `${value.slice(0, 93).trimEnd()}…` : value;
+}
+function runGuidance(run: Run) {
+  if (run.status === 'needs_input')
+    return {
+      label: 'Your decision is needed',
+      detail: run.question || 'Answer the open product question.',
+      action: true,
+    };
+  if (run.status === 'awaiting_approval')
+    return {
+      label: 'Review deployment',
+      detail: 'All required evidence passed. Approve or reject the exact release.',
+      action: true,
+    };
+  if (run.status === 'repairing')
+    return {
+      label: 'Codex is repairing a failed check',
+      detail: run.blocker || 'A required gate must be fixed and rerun.',
+      action: false,
+    };
+  if (run.status === 'completed' && run.step === 'validated')
+    return {
+      label: 'Validation completed',
+      detail: 'The existing workspace passed without changes or publication.',
+      action: false,
+    };
+  if (run.status === 'completed' || run.status === 'monitoring')
+    return {
+      label: 'Work completed',
+      detail: 'Required evidence is recorded and the release is under maintenance.',
+      action: false,
+    };
+  if (run.status === 'failed' || run.status === 'blocked')
+    return { label: 'Run needs attention', detail: run.blocker || 'Review the failure before resuming.', action: true };
+  if (run.status === 'cancelled')
+    return { label: 'Run cancelled', detail: 'No further lifecycle actions will run.', action: false };
+  if (run.step === 'self-review')
+    return {
+      label: 'Automated checks passed',
+      detail: 'Codex is reviewing the verified changes against every acceptance criterion.',
+      action: false,
+    };
+  if (run.step === 'publish')
+    return {
+      label: 'Preparing the verified change',
+      detail: 'Codex is creating the feature branch, commit, and pull request.',
+      action: false,
+    };
+  if (run.step === 'ci')
+    return {
+      label: 'GitHub checks are running',
+      detail: 'The verified commit is waiting for every required remote check.',
+      action: false,
+    };
+  const guidance: Record<string, [string, string]> = {
+    planning: ['Codex is planning', 'Inspecting the repository and defining scope, dependencies, effort, and risks.'],
+    requirements: ['Codex is defining acceptance', 'Turning the request into measurable requirements and evidence.'],
+    design: ['Codex is designing the change', 'Recording architecture, compatibility, security, and test strategy.'],
+    coding: ['Codex is working in your checkout', 'Implementing or repairing the change in this same conversation.'],
+    testing: ['Quality gates are running', `Current check: ${run.step.replaceAll('-', ' ')}.`],
+    deployment: ['Preparing delivery', 'Publishing the verified revision and following required GitHub checks.'],
+    maintenance: ['Monitoring the release', 'Following health evidence and preserving rollback information.'],
+  };
+  const [label, detail] = guidance[run.phase];
+  return { label, detail, action: false };
+}
 function Login({ me }: { me: Me }) {
   return (
     <main className="login-shell">
@@ -201,37 +270,24 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
     return () => clearInterval(t);
   }, []);
   const active = runs.filter((r) => ['running', 'repairing', 'needs_input', 'awaiting_approval'].includes(r.status));
-  const attention = runs.filter((r) => ['failed', 'blocked', 'cancelled'].includes(r.status));
+  const attention = runs.filter((r) => ['failed', 'blocked'].includes(r.status));
+  const decisions = runs.filter((r) => ['needs_input', 'awaiting_approval'].includes(r.status));
+  const successful = runs.filter((r) => ['completed', 'monitoring'].includes(r.status));
   return (
     <>
       <header className="page-head">
         <div>
           <p className="eyebrow">ENGINEERING OPERATIONS</p>
-          <h1>Development runs</h1>
-          <p>Seven phases, one accountable record.</p>
+          <h1>Work in progress</h1>
+          <p>See what Codex is doing, what passed, and when you need to act.</p>
         </div>
         <span className="badge monitoring">Native Codex connected</span>
       </header>
       <div className="metric-grid">
-        <Metric label="Active runs" value={active.length} detail="Across configured repositories" icon={Activity} />
-        <Metric
-          label="Awaiting approval"
-          value={runs.filter((r) => r.status === 'awaiting_approval').length}
-          detail="Deployment decisions"
-          icon={UserCheck}
-        />
-        <Metric
-          label="Under maintenance"
-          value={runs.filter((r) => r.status === 'monitoring').length}
-          detail="Live release monitors"
-          icon={Wrench}
-        />
-        <Metric
-          label="Needs attention"
-          value={attention.length}
-          detail="Failed, blocked, or cancelled"
-          icon={AlertTriangle}
-        />
+        <Metric label="In progress" value={active.length} detail="Codex is working" icon={Activity} />
+        <Metric label="Waiting for you" value={decisions.length} detail="Questions or approvals" icon={UserCheck} />
+        <Metric label="Successful" value={successful.length} detail="Completed or monitored" icon={CheckCircle2} />
+        <Metric label="Needs attention" value={attention.length} detail="Failed or blocked" icon={AlertTriangle} />
       </div>
       {error && (
         <div className="notice error">
@@ -266,10 +322,11 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
                   <Code2 />
                 </div>
                 <div className="run-name">
-                  <strong>{run.contract?.summary || run.prompt}</strong>
+                  <strong>{shortRunTitle(run)}</strong>
                   <span>
-                    {run.policy.owner}/{run.policy.repo} · native Codex session
+                    {run.policy.owner}/{run.policy.repo} · {run.mode === 'validation' ? 'validation' : 'delivery'}
                   </span>
+                  <em>{runGuidance(run).label}</em>
                 </div>
                 <div className="run-phase">
                   <small>PHASE {seven.indexOf(run.phase) + 1}/7</small>
@@ -340,6 +397,9 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
       </div>
     );
   const run = bundle.run;
+  const guidance = runGuidance(run);
+  const latestEvent = bundle.events.at(-1);
+  const phaseNumber = seven.indexOf(run.phase) + 1;
   return (
     <>
       <header className="detail-head">
@@ -349,15 +409,18 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
         <div className="detail-title">
           <div>
             <p className="eyebrow">RUN {run.id.slice(0, 8).toUpperCase()}</p>
-            <h1>{run.contract?.summary || run.prompt}</h1>
+            <h1>{shortRunTitle(run)}</h1>
             <p>
               {run.policy.owner}/{run.policy.repo} · candidate{' '}
               {(run.candidateSha || run.candidateDigest)?.slice(0, 9) || 'pending'}
             </p>
+            <details className="request-details">
+              <summary>View original request</summary>
+              <p>{run.prompt}</p>
+            </details>
           </div>
           <Badge status={run.status} />
         </div>
-        <PhaseRail run={run} />
       </header>
       {error && (
         <div className="notice error">
@@ -412,6 +475,20 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           </button>
         </div>
       )}
+      <section className={`run-focus ${guidance.action ? 'action' : ''}`}>
+        <div className="focus-icon">{guidance.action ? <UserCheck /> : <Activity />}</div>
+        <div className="focus-copy">
+          <span className="eyebrow">{guidance.action ? 'ACTION REQUIRED' : 'HAPPENING NOW'}</span>
+          <h2>{guidance.label}</h2>
+          <p>{guidance.detail}</p>
+          {latestEvent && <small>Latest update: {latestEvent.message}</small>}
+        </div>
+        <div className="focus-phase">
+          <strong>{phaseNumber}/7</strong>
+          <span>{run.phase}</span>
+        </div>
+        <PhaseRail run={run} />
+      </section>
       <div className="detail-grid">
         <section className="panel span2">
           <div className="panel-head">
@@ -470,7 +547,7 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
                   <div>
                     <strong>{g.label}</strong>
                     <small>
-                      {g.tests === null ? 'Command' : `${g.tests} tests`} · {g.durationMs}ms
+                      {g.cached ? 'Reused' : g.tests === null ? 'Command' : `${g.tests} tests`} · {g.durationMs}ms
                     </small>
                   </div>
                   <Badge status={g.status} />
@@ -637,6 +714,7 @@ function RepositoriesPage() {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [profiles, setProfiles] = useState<Record<string, Repository['checks']>>({});
   const [available, setAvailable] = useState<GitHubRepository[]>([]);
+  const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
   const fresh = {
@@ -644,7 +722,7 @@ function RepositoriesPage() {
     owner: '',
     repo: '',
     branch: 'main',
-    stack: 'typescript' as 'typescript' | 'python',
+    stack: 'typescript' as 'typescript' | 'python' | 'custom',
     checksJson: '',
     standards: '',
     requiredCiChecks: 'ci',
@@ -667,7 +745,8 @@ function RepositoriesPage() {
         setProfiles(p);
         setAvailable(g);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
   useEffect(() => {
     load();
   }, []);
@@ -677,6 +756,25 @@ function RepositoriesPage() {
     const [owner, repo] = selected.fullName.split('/');
     const stack = selected.language?.toLowerCase() === 'python' ? 'python' : 'typescript';
     setForm({ ...form, name: selected.name, owner, repo, branch: selected.defaultBranch, stack });
+  }
+  function edit(repository: Repository) {
+    setForm({
+      name: repository.name,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: repository.branch,
+      stack: repository.stack,
+      checksJson: JSON.stringify(repository.checks, null, 2),
+      standards: repository.standards,
+      requiredCiChecks: repository.requiredCiChecks.join(', '),
+      ciWaiver: repository.ciWaiver,
+      deploymentEnabled: repository.deployment.enabled,
+      healthUrl: repository.deployment.healthUrl,
+      workflow: repository.deployment.workflow,
+      rollbackWorkflow: repository.deployment.rollbackWorkflow,
+      environment: repository.deployment.environment,
+    });
+    setOpen(true);
   }
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -733,7 +831,16 @@ function RepositoriesPage() {
           {error}
         </div>
       )}
-      {!available.length && !repos.length && (
+      {loading && (
+        <div className="notice">
+          <LoaderCircle className="spin" />
+          <div>
+            <strong>Loading repositories</strong>
+            <p>Reading saved policies and repositories allowed by GitHub.</p>
+          </div>
+        </div>
+      )}
+      {!loading && !available.length && !repos.length && (
         <div className="notice warning">
           <Github />
           <div>
@@ -758,7 +865,10 @@ function RepositoriesPage() {
               <span>Policy v{r.version}</span>
               <span>{r.deployment.environment}</span>
             </div>
-            <PhaseRail run={{ phase: 'planning' } as Run} />
+            <button className="button quiet repo-edit" onClick={() => edit(r)}>
+              <Wrench />
+              Edit policy
+            </button>
           </article>
         ))}
       </div>
@@ -771,7 +881,14 @@ function RepositoriesPage() {
         </section>
       )}
       {open && (
-        <Modal title="Add a repository" close={() => setOpen(false)}>
+        <Modal
+          title={
+            repos.some((r) => r.owner === form.owner && r.repo === form.repo)
+              ? 'Edit repository policy'
+              : 'Add a repository'
+          }
+          close={() => setOpen(false)}
+        >
           <form className="form" onSubmit={save}>
             <label>
               GitHub repository
@@ -795,11 +912,12 @@ function RepositoriesPage() {
                 <select
                   value={form.stack}
                   onChange={(e) =>
-                    setForm({ ...form, stack: e.target.value as 'typescript' | 'python', checksJson: '' })
+                    setForm({ ...form, stack: e.target.value as 'typescript' | 'python' | 'custom', checksJson: '' })
                   }
                 >
                   <option value="typescript">TypeScript</option>
                   <option value="python">Python</option>
+                  <option value="custom">Custom</option>
                 </select>
               </label>
               <label>
@@ -843,9 +961,19 @@ function RepositoriesPage() {
             <details>
               <summary>Advanced quality gates</summary>
               <p className="fine-print">
-                The selected stack provides a safe default. Add project-specific integration or E2E commands here when
-                required.
+                Recommended TypeScript gates include build, lint, types, unit, isolated browser E2E, secrets, SAST, and
+                dependency audit. Company-specific scanners can be added here.
               </p>
+              {profiles[form.stack] && (
+                <button
+                  type="button"
+                  className="button quiet"
+                  onClick={() => setForm({ ...form, checksJson: JSON.stringify(profiles[form.stack], null, 2) })}
+                >
+                  <RefreshCw />
+                  Use recommended gates
+                </button>
+              )}
               <textarea
                 rows={12}
                 value={form.checksJson || JSON.stringify(profiles[form.stack] || [], null, 2)}
@@ -1072,9 +1200,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
               project. There is no second Codex login, clone, or Docker worker.
             </p>
           </div>
-          <div>
-            <Badge status="monitoring" />
-          </div>
+          <SetupStatus label="Connected" />
         </section>
         <section className={`setup-card ${state?.github ? 'complete' : ''}`}>
           <div className="setup-number">2</div>
@@ -1110,7 +1236,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
               Create a GitHub token ↗
             </a>
           </div>
-          <div>{state?.github && <Badge status="monitoring" />}</div>
+          <div>{state?.github && <SetupStatus label="Connected" />}</div>
         </section>
         <section className={`setup-card ${state?.repositories ? 'complete' : ''}`}>
           <div className="setup-number">3</div>
@@ -1121,7 +1247,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
           </div>
           <div>
             {state?.repositories ? (
-              <Badge status="monitoring" />
+              <SetupStatus label="Configured" />
             ) : (
               <button className="button primary" onClick={() => navigate('repositories')}>
                 <GitBranch />
@@ -1132,6 +1258,14 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
         </section>
       </div>
     </>
+  );
+}
+function SetupStatus({ label }: { label: string }) {
+  return (
+    <span className="setup-status">
+      <CheckCircle2 />
+      {label}
+    </span>
   );
 }
 function SystemPage() {

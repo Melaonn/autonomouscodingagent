@@ -86,8 +86,8 @@ describe('Codex chat integration', () => {
     );
     expect(names.some((name) => name.includes('approv'))).toBe(false);
 
-    const call = async (name: string, args: Record<string, unknown>) => {
-      const response = await client.callTool({ name, arguments: args });
+    const call = async (name: string, args: Record<string, unknown>, options?: Parameters<Client['callTool']>[2]) => {
+      const response = await client.callTool({ name, arguments: args }, undefined, options);
       const content = response.content as { type: string; text: string }[];
       return { error: response.isError, data: JSON.parse(content[0].text) };
     };
@@ -150,9 +150,15 @@ describe('Codex chat integration', () => {
         testStrategy: 'Run configured unit gate',
       },
     });
-    const verified = await call('sdlc_verify', { runId, workspaceRoot: project });
+    const progress: string[] = [];
+    const verified = await call(
+      'sdlc_verify',
+      { runId, workspaceRoot: project },
+      { onprogress: (update) => progress.push(update.message || '') },
+    );
     expect(verified.data.step).toBe('self-review');
     expect(verified.data.gates[0].status).toBe('pass');
+    expect(progress).toEqual(expect.arrayContaining(['Starting unit', expect.stringContaining('unit passed')]));
     const reviewed = await call('sdlc_review', {
       runId,
       review: {

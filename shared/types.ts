@@ -5,6 +5,8 @@ export type Phase = (typeof phases)[number];
 
 export const backendSchema = z.literal('codex');
 export type Backend = z.infer<typeof backendSchema>;
+export const runModeSchema = z.enum(['delivery', 'validation']);
+export type RunMode = z.infer<typeof runModeSchema>;
 export type Status =
   | 'running'
   | 'repairing'
@@ -166,6 +168,7 @@ export interface GateResult {
   findings: string[];
   artifactId?: string;
   durationMs: number;
+  cached?: boolean;
 }
 
 export interface ContextSource {
@@ -201,6 +204,7 @@ export interface Run {
   repositoryId: string;
   prompt: string;
   backend: Backend;
+  mode?: RunMode;
   status: Status;
   phase: Phase;
   step: string;
@@ -258,4 +262,5 @@ export interface JobResult {
   stderr: string;
   durationMs: number;
   files: Record<string, string>;
+  cached?: boolean;
 }

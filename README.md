@@ -30,7 +30,7 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
 
    > Build an audit history page with filtering and pagination.
 
-Codex now uses the `sdlc` MCP tools from the same conversation. Open the dashboard to see phases, progress, quality gates, evidence, PR and CI status, and deployment approval.
+Codex now uses the `sdlc` MCP tools from the same conversation. Open the dashboard to see what is happening now, what comes next, quality evidence, failures, PR and CI status, and any decision that needs you.
 
 ## What happens after the prompt
 
@@ -38,10 +38,12 @@ Codex now uses the `sdlc` MCP tools from the same conversation. Open the dashboa
 2. **Requirements:** it creates measurable acceptance criteria and maps testable criteria to configured checks. A real product ambiguity pauses for the user.
 3. **Design:** it records architecture, interfaces, data and UI changes, security decisions, compatibility, and test strategy.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.
-5. **Testing:** the MCP bridge runs every configured command locally. Build, lint, types, unit, integration, E2E, and security results are bound to the exact Git tree digest. Failures return the lifecycle to repair.
+5. **Testing:** the MCP bridge reports per-gate progress in Codex and the dashboard while running configured commands locally. Build, lint, types, unit, isolated E2E, secret scanning, static security, and dependency results are bound to the exact Git tree digest. Unchanged dependency manifests reuse the verified installation, and independent checks run with bounded concurrency. Failures return the lifecycle to repair.
 6. **Review:** after checks pass, Codex reviews the diff and cites evidence for every acceptance criterion. Critical or high findings return to repair.
 7. **Delivery:** Codex commits and pushes the verified tree on a feature branch. The control plane creates or updates a pull request and waits for required GitHub checks.
 8. **Deployment and maintenance:** the dashboard asks a human to approve the exact commit and environment. It can dispatch deployment, verify health, roll back a failed release, and monitor the result.
+
+Explicit validation-only runs stop successfully after verification and review when the workspace is unchanged. They do not create a branch, pull request, or deployment.
 
 The agent cannot mark a run complete through prose. Completion comes from recorded checkpoints, matching policy versions and Git tree digests, passing checks, acceptance evidence, and required CI.
 
