@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Store } from '../apps/server/src/store.js';
 import type { Repository, Run } from '../shared/types.js';
+
 const stores: Store[] = [];
 afterEach(async () => {
-  await Promise.all(stores.splice(0).map((s) => s.close()));
+  await Promise.all(stores.splice(0).map((store) => store.close()));
 });
+
 function repo(): Repository {
   return {
     id: crypto.randomUUID(),
@@ -24,7 +26,6 @@ function repo(): Repository {
         reportPath: '',
         required: true,
         timeoutSeconds: 30,
-        baselineAllowed: false,
       },
     ],
     requiredCiChecks: [],
@@ -42,6 +43,7 @@ function repo(): Repository {
     },
   };
 }
+
 function run(repository: Repository): Run {
   const at = new Date().toISOString();
   return {
@@ -49,22 +51,28 @@ function run(repository: Repository): Run {
     repositoryId: repository.id,
     prompt: 'Make a reliable change',
     backend: 'codex',
-    reviewer: 'codex',
-    status: 'queued',
+    status: 'running',
     phase: 'planning',
-    step: 'preflight',
+    step: 'planning',
     attempt: 0,
     createdAt: at,
     updatedAt: at,
+    startedAt: at,
+    workspace: {
+      branch: 'main',
+      headSha: 'a'.repeat(40),
+      digest: 'a'.repeat(40),
+      dirty: false,
+      changes: [],
+    },
     policy: repository,
     context: [],
-    baseline: [],
     gates: [],
-    limits: { repairs: 3, minutes: 90, agentMinutes: 20 },
-    usage: { inputTokens: 0, outputTokens: 0, costUsd: null },
+    limits: { verifications: 6 },
     repeatedFailures: 0,
   };
 }
+
 describe('durable store', () => {
   it('prevents two active runs for one repository', async () => {
     const store = await Store.open();
@@ -73,16 +81,18 @@ describe('durable store', () => {
     await store.insertRun(run(repository));
     await expect(store.insertRun(run(repository))).rejects.toThrow();
   });
-  it('rejects a stale worker write after its lease token changes', async () => {
+
+  it('permits a new run after the previous one finishes', async () => {
     const store = await Store.open();
     stores.push(store);
-    const item = run(repo());
-    await store.insertRun(item);
-    const claim = await store.claim(item.id);
-    expect(claim).toBeTruthy();
-    claim!.run.status = 'running';
-    await expect(store.saveRun(claim!.run, crypto.randomUUID())).rejects.toThrow('Run lease lost');
+    const repository = repo();
+    const first = run(repository);
+    await store.insertRun(first);
+    first.status = 'completed';
+    await store.saveRun(first);
+    await expect(store.insertRun(run(repository))).resolves.toBeUndefined();
   });
+
   it('versions and finds company knowledge', async () => {
     const store = await Store.open();
     stores.push(store);
@@ -96,7 +106,7 @@ describe('durable store', () => {
       hash: 'hash',
       createdAt: new Date().toISOString(),
     });
-    const docs = await store.searchDocuments('add tenant isolation to customer API');
-    expect(docs[0]?.id).toBe('doc');
+    const documents = await store.searchDocuments('add tenant isolation to customer API');
+    expect(documents[0]?.id).toBe('doc');
   });
 });

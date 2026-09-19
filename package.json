@@ -17,15 +17,14 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "check": "npm run format:check && npm run typecheck && npm run lint && npm test && npm run build",
-    "start": "node apps/server/dist/index.js",
-    "runner": "tsx apps/server/src/runner-main.ts"
+    "start": "node apps/server/dist/index.js"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@fastify/cookie": "^11.0.2",
     "@fastify/static": "^10.1.3",
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "dockerode": "^5.0.1",
+    "cross-spawn": "^7.0.6",
     "dotenv": "^17.2.3",
     "fastify": "^5.12.4",
     "lucide-react": "^0.468.0",
@@ -37,7 +36,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.0",
     "@playwright/test": "^1.58.0",
-    "@types/dockerode": "^3.3.47",
+    "@types/cross-spawn": "^6.0.6",
     "@types/node": "^24.10.0",
     "@types/pg": "^8.15.5",
     "@types/react": "^19.2.0",

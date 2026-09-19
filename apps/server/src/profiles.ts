@@ -14,34 +14,19 @@ const check = (
   reportPath,
   required: true,
   timeoutSeconds: 600,
-  baselineAllowed: false,
 });
 export const profiles: Record<string, CheckCommand[]> = {
   typescript: [
-    check('install', 'setup', ['npm', 'ci', '--ignore-scripts']),
+    check('install', 'setup', ['npm', 'ci']),
     check('build', 'build', ['npm', 'run', 'build']),
     check('lint', 'lint', ['npm', 'run', 'lint']),
     check('typecheck', 'types', ['npm', 'run', 'typecheck']),
     check(
       'unit',
       'unit',
-      ['npm', 'run', 'test:unit', '--', '--reporter=json', '--outputFile=.reports/unit.json'],
+      ['npm', 'test', '--', '--reporter=json', '--outputFile=.reports/unit.json'],
       'vitest',
       '.reports/unit.json',
-    ),
-    check(
-      'integration',
-      'integration',
-      ['npm', 'run', 'test:integration', '--', '--reporter=json', '--outputFile=.reports/integration.json'],
-      'vitest',
-      '.reports/integration.json',
-    ),
-    check(
-      'e2e',
-      'e2e',
-      ['npx', '--no-install', 'playwright', 'test', '--reporter=json'],
-      'playwright',
-      '.reports/playwright.json',
     ),
     check('dependencies', 'security', ['npm', 'audit', '--json'], 'npm-audit', '.reports/audit.json'),
   ],
@@ -73,20 +58,3 @@ export const profiles: Record<string, CheckCommand[]> = {
     ),
   ],
 };
-const security = [
-  check(
-    'sast',
-    'security',
-    ['semgrep', 'scan', '--config=/opt/sdlc/semgrep.yml', '--json', '--output=.reports/semgrep.json'],
-    'semgrep',
-    '.reports/semgrep.json',
-  ),
-  check(
-    'secrets',
-    'security',
-    ['gitleaks', 'dir', '.', '--report-format=json', '--report-path=.reports/gitleaks.json'],
-    'gitleaks',
-    '.reports/gitleaks.json',
-  ),
-];
-for (const profile of Object.values(profiles)) profile.push(...security);

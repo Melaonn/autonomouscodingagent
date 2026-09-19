@@ -51,8 +51,14 @@ export class ChatClient {
 
   async request<T>(path: string, body?: unknown): Promise<T> {
     // Deliberately exclude approval, credentials, policy writes and arbitrary URLs.
-    if (!/^\/api\/(readiness|repositories|runs(?:\/[\w-]+(?:\/(answer|cancel|resume|report))?)?)$/.test(path))
-      throw new Error('Unsupported chat operation.');
+    const allowed = [
+      /^\/api\/readiness$/,
+      /^\/api\/repositories$/,
+      /^\/api\/runs$/,
+      /^\/api\/runs\/[\w-]+$/,
+      /^\/api\/runs\/[\w-]+\/(plan|requirements|design|progress|verify|review|publish|sync|answer|cancel|resume|report)$/,
+    ];
+    if (!allowed.some((pattern) => pattern.test(path))) throw new Error('Unsupported chat operation.');
     if (!this.cookie) {
       this.loginTask ||= this.login().finally(() => {
         this.loginTask = undefined;
@@ -62,7 +68,7 @@ export class ChatClient {
     const response = await fetch(`${this.url}${path}`, {
       method: body === undefined ? 'GET' : 'POST',
       redirect: 'error',
-      signal: AbortSignal.timeout(40_000),
+      signal: AbortSignal.timeout(path.endsWith('/verify') ? 60 * 60_000 : 40_000),
       headers: { cookie: this.cookie, 'x-csrf-token': this.csrf, 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });

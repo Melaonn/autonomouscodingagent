@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { approvalDigest, completionFailures, evaluate, validApproval } from '../apps/server/src/gates.js';
 import type { CheckCommand, Repository, Run } from '../shared/types.js';
+
+const digest = 'b'.repeat(40);
 const command: CheckCommand = {
   id: 'unit',
   label: 'unit',
@@ -10,7 +12,6 @@ const command: CheckCommand = {
   reportPath: '.reports/unit.json',
   required: true,
   timeoutSeconds: 60,
-  baselineAllowed: false,
 };
 const policy: Repository = {
   id: 'repo',
@@ -35,6 +36,7 @@ const policy: Repository = {
     monitorIntervalSeconds: 300,
   },
 };
+
 function fixture(): Run {
   const time = new Date().toISOString();
   return {
@@ -42,18 +44,42 @@ function fixture(): Run {
     repositoryId: policy.id,
     prompt: 'Implement a safe API behavior',
     backend: 'codex',
-    reviewer: 'codex',
     status: 'running',
     phase: 'testing',
-    step: 'review',
+    step: 'self-review',
     attempt: 0,
     createdAt: time,
     updatedAt: time,
-    baseSha: 'a'.repeat(40),
-    candidateSha: 'b'.repeat(40),
+    startedAt: time,
+    workspace: {
+      branch: 'main',
+      headSha: 'a'.repeat(40),
+      digest: 'a'.repeat(40),
+      dirty: false,
+      changes: [],
+    },
+    candidateDigest: digest,
+    candidateSha: 'c'.repeat(40),
     policy,
     context: [],
-    baseline: [],
+    plan: {
+      scope: 'API behavior',
+      steps: ['implement', 'test'],
+      dependencies: [],
+      estimatedEffort: 'one day',
+      costEstimate: 'one developer day',
+      schedule: ['implementation', 'verification'],
+      risks: [],
+    },
+    design: {
+      architecture: 'Existing service module',
+      apiContracts: [],
+      dataChanges: [],
+      uiBehavior: [],
+      security: [],
+      compatibility: 'Backward compatible',
+      testStrategy: 'Unit tests',
+    },
     gates: [],
     contract: {
       summary: 'Change API',
@@ -72,20 +98,19 @@ function fixture(): Run {
       clarification: null,
     },
     review: { summary: 'okay', findings: [], criteria: [{ id: 'AC-1', satisfied: true, evidence: 'unit gate' }] },
-    limits: { repairs: 3, minutes: 90, agentMinutes: 20 },
-    usage: { inputTokens: 0, outputTokens: 0, costUsd: null },
+    limits: { verifications: 6 },
     repeatedFailures: 0,
   };
 }
+
 describe('evidence gates', () => {
   it('fails closed when a machine-readable report is missing', () => {
-    const run = fixture();
-    const gate = evaluate(command, { exitCode: 0, stdout: '', stderr: '', durationMs: 4, files: {} }, run);
+    const gate = evaluate(command, { exitCode: 0, stdout: '', stderr: '', durationMs: 4, files: {} }, fixture());
     expect(gate.status).toBe('error');
     expect(gate.findings).toContain('Required machine-readable report missing');
   });
-  it('rejects a successful runner invocation that executes zero tests', () => {
-    const run = fixture();
+
+  it('rejects a successful command that executes zero tests', () => {
     const gate = evaluate(
       command,
       {
@@ -102,12 +127,13 @@ describe('evidence gates', () => {
           }),
         },
       },
-      run,
+      fixture(),
     );
     expect(gate.status).toBe('fail');
     expect(gate.findings).toContain('No required tests executed');
   });
-  it('does not accept stale evidence from another candidate', () => {
+
+  it('does not accept evidence from another workspace tree', () => {
     const run = fixture();
     run.gates = [
       {
@@ -115,7 +141,7 @@ describe('evidence gates', () => {
         label: 'unit',
         required: true,
         status: 'pass',
-        candidateSha: 'c'.repeat(40),
+        candidateDigest: 'd'.repeat(40),
         policyVersion: 3,
         exitCode: 0,
         tests: 4,
@@ -124,7 +150,9 @@ describe('evidence gates', () => {
       },
     ];
     expect(completionFailures(run)).toContain('unit: required evidence missing, failing, or stale');
+    expect(completionFailures(run)).toContain('AC-1: test evidence missing');
   });
+
   it('binds deployment approval to revision, policy, environment and workflow', () => {
     const run = fixture();
     run.approval = { digest: approvalDigest(run), approvedBy: 'operator', approvedAt: new Date().toISOString() };

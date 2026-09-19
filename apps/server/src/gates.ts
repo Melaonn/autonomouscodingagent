@@ -1,18 +1,17 @@
 import type { CheckCommand, GateResult, JobResult, Run } from '../../../shared/types.js';
 import { hash } from './security.js';
-export function evaluate(command: CheckCommand, result: JobResult, run: Run, baseline = false): GateResult {
+export function evaluate(command: CheckCommand, result: JobResult, run: Run): GateResult {
   const gate: GateResult = {
     id: command.id,
     label: command.label,
     required: command.required,
     status: result.exitCode === 0 ? 'pass' : 'fail',
-    candidateSha: run.candidateSha || run.baseSha || '',
+    candidateDigest: run.candidateDigest || '',
     policyVersion: run.policy.version,
     exitCode: result.exitCode,
     durationMs: result.durationMs,
     tests: null,
     findings: [],
-    baseline,
   };
   try {
     if (result.exitCode < 0 || result.exitCode === 124 || result.exitCode === 127) {
@@ -79,26 +78,23 @@ export function evaluate(command: CheckCommand, result: JobResult, run: Run, bas
     gate.status = 'error';
     gate.findings.push(error instanceof Error ? error.message : 'Invalid verification evidence');
   }
-  if (baseline && command.baselineAllowed && gate.status === 'fail') gate.status = 'waived';
   return gate;
 }
 export function completionFailures(run: Run): string[] {
   const failures: string[] = [];
-  for (const command of [
-    ...run.policy.checks.filter((c) => c.kind !== 'setup'),
-    ...(run.acceptance ? [run.acceptance.command] : []),
-  ]) {
+  for (const command of run.policy.checks) {
     const gate = run.gates.find((g) => g.id === command.id);
     if (
       command.required &&
       (!gate ||
         gate.status !== 'pass' ||
-        gate.candidateSha !== run.candidateSha ||
+        gate.candidateDigest !== run.candidateDigest ||
         gate.policyVersion !== run.policy.version)
     )
       failures.push(`${command.id}: required evidence missing, failing, or stale`);
   }
-  if (!run.contract || !run.review) failures.push('Requirements or independent review missing');
+  if (!run.plan || !run.contract || !run.design || !run.review)
+    failures.push('Planning, requirements, design, or self-review evidence missing');
   for (const criterion of run.contract?.criteria || []) {
     const verdict = run.review?.criteria.find((c) => c.id === criterion.id);
     if (!verdict?.satisfied || !verdict.evidence.trim())
@@ -107,12 +103,21 @@ export function completionFailures(run: Run): string[] {
     if (
       criterion.evidence === 'test' &&
       (!criterion.checkIds.length ||
-        criterion.checkIds.some((id) => !run.gates.some((g) => g.id === id && g.status === 'pass')))
+        criterion.checkIds.some(
+          (id) =>
+            !run.gates.some(
+              (gate) =>
+                gate.id === id &&
+                gate.status === 'pass' &&
+                gate.candidateDigest === run.candidateDigest &&
+                gate.policyVersion === run.policy.version,
+            ),
+        ))
     )
       failures.push(`${criterion.id}: test evidence missing`);
   }
   if (run.review?.findings.some((f) => ['high', 'critical'].includes(f.severity)))
-    failures.push('Blocking independent review findings');
+    failures.push('Blocking self-review findings');
   return failures;
 }
 export function approvalDigest(run: Run) {
@@ -129,5 +134,5 @@ export function validApproval(run: Run) {
   return !!run.approval?.approvedBy && !run.approval.rejected && run.approval.digest === approvalDigest(run);
 }
 export function report(run: Run) {
-  return `# SDLC evidence report\n\nRun: ${run.id}\nStatus: ${run.status}\nPhase: ${run.phase}\nCandidate: ${run.candidateSha || 'not available'}\nBase: ${run.baseSha || 'not available'}\nPolicy: ${run.policy.version}\n\n## Request\n${run.prompt}\n\n## Acceptance criteria\n${run.contract?.criteria.map((c) => `- ${c.id}: ${c.description}`).join('\n') || 'Not generated'}\n\n## Verification\n${run.gates.map((g) => `- ${g.label}: ${g.status} (${g.tests === null ? 'command' : `${g.tests} tests`}, revision ${g.candidateSha})`).join('\n') || 'No verification evidence'}\n\n## Review\n${run.review?.summary || 'Not performed'}\n\n## Company context\n${run.context.map((c) => `- ${c.title}, version ${c.version}, SHA256 ${c.hash}`).join('\n') || 'No matching documents'}\n\n## Delivery\n${run.prUrl || 'No PR published'}\nDeployment: ${run.deployment?.releasedAt || 'Not deployed'}\n\n## Limitations\n${run.blocker || 'Passing checks establishes configured acceptance; company production validation is separate.'}\n`;
+  return `# SDLC evidence report\n\nRun: ${run.id}\nStatus: ${run.status}\nPhase: ${run.phase}\nWorkspace digest: ${run.candidateDigest || 'not verified'}\nCommit: ${run.candidateSha || 'not published'}\nStarting commit: ${run.workspace.headSha}\nPolicy: ${run.policy.version}\n\n## Request\n${run.prompt}\n\n## Acceptance criteria\n${run.contract?.criteria.map((c) => `- ${c.id}: ${c.description}`).join('\n') || 'Not generated'}\n\n## Verification\n${run.gates.map((g) => `- ${g.label}: ${g.status} (${g.tests === null ? 'command' : `${g.tests} tests`}, workspace ${g.candidateDigest})`).join('\n') || 'No verification evidence'}\n\n## Self-review\n${run.review?.summary || 'Not performed'}\n\n## Company context\n${run.context.map((c) => `- ${c.title}, version ${c.version}, SHA256 ${c.hash}`).join('\n') || 'No matching documents'}\n\n## Delivery\n${run.prUrl || 'No PR published'}\nDeployment: ${run.deployment?.releasedAt || 'Not deployed'}\n\n## Limitations\n${run.blocker || 'Passing checks establishes configured acceptance; company production validation is separate.'}\n`;
 }

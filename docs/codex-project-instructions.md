@@ -1,16 +1,14 @@
 <!-- sdlc-chat-integration -->
-## SDLC workflow from Codex
+## Governed SDLC workflow
 
-For a user request to implement a feature or fix a bug in this repository:
+For a feature, bug fix, refactor, or other request that changes this repository, use the `sdlc` MCP tools. Ordinary questions and read-only investigation do not require a run.
 
-1. Identify this repository's exact GitHub owner/repo from `git remote get-url origin`. Check `git status --short`. Explain that the governed worker starts from the configured remote branch and does not include uncommitted local changes. Do not silently discard, stash, commit or upload them.
-2. Call `sdlc_repositories` and match this repository exactly. If unavailable or unconfigured, explain the blocker; never silently claim governed execution or switch repositories.
-3. Call `sdlc_runs` to find an existing task before starting a duplicate. For a new task call `sdlc_start` with the user's feature/bug request and relevant conversation requirements. Do not include credentials or unrelated files in the prompt.
-4. The harness's background Codex worker owns implementation in an isolated checkout. Do not simultaneously implement the task in this local checkout. Use `sdlc_status` with `waitSeconds: 20` and the last `updatedAt` to follow work, explaining meaningful progress. The worker continues if this chat closes while the harness services remain running.
-5. If the run needs input, ask the user the exact clarification question and send their answer through `sdlc_answer`. Do not invent stakeholder answers.
-6. Report actual failed or blocked gates. Resume only after the blocker is resolved; never repeatedly resume unchanged failures. Cancel only at the user's request.
-7. At deployment approval, direct the user to the local dashboard to review the exact commit. Never approve through shell, HTTP, or other tools on the user's behalf.
-8. Use `sdlc_report` to explain the final evidence and PR link. A model saying done is not a passed run.
+1. Inspect the current repository and `git status`, then call `sdlc_start` with the absolute repository root and the user's complete request. Work in this checkout; preserve intentional local changes.
+2. In this same conversation, inspect the repository once and submit `sdlc_plan`, `sdlc_requirements`, and `sdlc_design` in order. Ask the user when a real product decision is missing. Do not invent stakeholder intent.
+3. Implement the change locally and send useful `sdlc_progress` updates so the dashboard shows the current work.
+4. Call `sdlc_verify`. Fix every failed configured gate in this conversation and repeat verification until it passes or the run reaches its limit. Never describe a failing or skipped gate as successful.
+5. Review the resulting diff against every acceptance criterion, security expectations, error handling, compatibility, and test evidence. Submit the structured result with `sdlc_review`. This is a same-session self-review; do not call it independent.
+6. When review passes, create a `codex/` feature branch, commit the exact verified tree, push it to origin, and call `sdlc_publish`. Follow required CI with `sdlc_sync` or `sdlc_status`.
+7. Deployment approval belongs to the user in the local dashboard. Never approve deployment through chat. Report the final status and link to the evidence or pull request when available.
 
-Ordinary questions, code explanations and reviews do not start a run. An explicit user request to work locally overrides this routing: explain that this work is outside the governed run. These instructions help select the workflow; they are not a technical interception of every Codex prompt.
-<!-- /sdlc-chat-integration -->
+If a previous conversation already started the work, call `sdlc_runs` and `sdlc_status` before creating another run. The control plane evidence decides completion; a model statement that work is done does not.

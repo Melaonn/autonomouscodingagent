@@ -35,10 +35,11 @@ export class Store {
       `CREATE TABLE IF NOT EXISTS entities (id text PRIMARY KEY, kind text NOT NULL, data jsonb NOT NULL);`,
     );
     await this.db.query(
-      `CREATE TABLE IF NOT EXISTS runs (id text PRIMARY KEY, repository_id text NOT NULL, status text NOT NULL, data jsonb NOT NULL, lease_token text, lease_until timestamptz);`,
+      `CREATE TABLE IF NOT EXISTS runs (id text PRIMARY KEY, repository_id text NOT NULL, status text NOT NULL, data jsonb NOT NULL);`,
     );
+    await this.db.query(`DROP INDEX IF EXISTS one_active_repository;`);
     await this.db.query(
-      `CREATE UNIQUE INDEX IF NOT EXISTS one_active_repository ON runs(repository_id) WHERE status IN ('queued','running','repairing','needs_input','awaiting_approval');`,
+      `CREATE UNIQUE INDEX one_active_repository ON runs(repository_id) WHERE status IN ('running','repairing','needs_input','awaiting_approval');`,
     );
     await this.db.query(
       `CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, run_id text NOT NULL, data jsonb NOT NULL);`,
@@ -57,6 +58,11 @@ export class Store {
       `CREATE TABLE IF NOT EXISTS secrets (id text PRIMARY KEY, value text NOT NULL, updated_at timestamptz DEFAULT now());`,
     );
     await this.db.query(`INSERT INTO schema_migrations(version) VALUES (1) ON CONFLICT DO NOTHING;`);
+    const version = await this.db.query<{ version: number }>('SELECT version FROM schema_migrations WHERE version=2');
+    if (!version.rows.length) {
+      await this.db.query("DELETE FROM runs WHERE data->'workspace' IS NULL");
+      await this.db.query(`INSERT INTO schema_migrations(version) VALUES (2);`);
+    }
   }
   async put<T extends { id: string }>(kind: string, value: T) {
     await this.db.query('INSERT INTO entities(id,kind,data) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET data=$3', [
@@ -115,36 +121,14 @@ export class Store {
       await this.db.query<{ data: Run }>("SELECT data FROM runs ORDER BY data->>'createdAt' DESC LIMIT 200")
     ).rows.map((x) => x.data);
   }
-  async saveRun(run: Run, token?: string) {
+  async saveRun(run: Run) {
     run.updatedAt = new Date().toISOString();
-    const result = await this.db.query(
-      `UPDATE runs SET status=$2,data=$3 WHERE id=$1 ${token ? 'AND lease_token=$4' : ''} RETURNING id`,
-      [run.id, run.status, JSON.stringify(run), ...(token ? [token] : [])],
-    );
-    if (!result.rows.length) throw new Error('Run lease lost; stale worker cannot write');
-  }
-  async claim(id: string): Promise<{ run: Run; token: string } | undefined> {
-    const token = randomUUID();
-    const result = await this.db.query<{ data: Run }>(
-      `UPDATE runs SET lease_token=$2,lease_until=now()+interval '45 seconds' WHERE id=$1 AND status IN ('queued','running','repairing') AND (lease_until IS NULL OR lease_until<now()) RETURNING data`,
-      [id, token],
-    );
-    return result.rows[0] ? { run: result.rows[0].data, token } : undefined;
-  }
-  async heartbeat(id: string, token: string) {
-    await this.db.query("UPDATE runs SET lease_until=now()+interval '45 seconds' WHERE id=$1 AND lease_token=$2", [
-      id,
-      token,
+    const result = await this.db.query('UPDATE runs SET status=$2,data=$3 WHERE id=$1 RETURNING id', [
+      run.id,
+      run.status,
+      JSON.stringify(run),
     ]);
-  }
-  async release(id: string, token: string) {
-    await this.db.query('UPDATE runs SET lease_until=NULL,lease_token=NULL WHERE id=$1 AND lease_token=$2', [
-      id,
-      token,
-    ]);
-  }
-  async revoke(id: string) {
-    await this.db.query('UPDATE runs SET lease_until=NULL,lease_token=NULL WHERE id=$1', [id]);
+    if (!result.rows.length) throw new Error('Run no longer exists');
   }
   async event(run: Run, kind: string, message: string, data?: unknown) {
     const event = {
@@ -172,7 +156,7 @@ export class Store {
       runId: run.id,
       name,
       hash: hash(clean),
-      candidateSha: run.candidateSha || run.baseSha || '',
+      candidateDigest: run.candidateDigest || run.workspace.digest,
       createdAt: new Date().toISOString(),
       content: clean,
     };
@@ -209,17 +193,11 @@ export class Store {
   async monitor(id: string) {
     await this.db.query('INSERT INTO monitors(run_id) VALUES($1) ON CONFLICT DO NOTHING', [id]);
     return (
-      await this.db.query<{ failures: number; last_check: Date | null; incident_run_id: string | null }>(
-        'SELECT * FROM monitors WHERE run_id=$1',
-        [id],
-      )
+      await this.db.query<{ failures: number; last_check: Date | null }>('SELECT * FROM monitors WHERE run_id=$1', [id])
     ).rows[0];
   }
-  async updateMonitor(id: string, failures: number, incident?: string | null) {
-    await this.db.query(
-      'UPDATE monitors SET failures=$2,last_check=now(),incident_run_id=COALESCE($3,incident_run_id) WHERE run_id=$1',
-      [id, failures, incident || null],
-    );
+  async updateMonitor(id: string, failures: number) {
+    await this.db.query('UPDATE monitors SET failures=$2,last_check=now() WHERE run_id=$1', [id, failures]);
   }
   async setSecret(id: string, value: string) {
     await this.db.query(

@@ -1,1 +1,1 @@
-{ "name": "@sdlc/server", "private": true, "type": "module", "scripts": { "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts", "build": "esbuild src/index.ts src/runner-main.ts src/chat-main.ts --bundle --platform=node --format=esm --packages=external --outdir=dist" } }
+{ "name": "@sdlc/server", "private": true, "type": "module", "scripts": { "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts", "build": "esbuild src/index.ts src/chat-main.ts --bundle --platform=node --format=esm --packages=external --outdir=dist" } }

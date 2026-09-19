@@ -1,7 +1,6 @@
 import { config, validateConfig } from './config.js';
 import { Store } from './store.js';
-import { HttpRunner } from './runner.js';
-import { Engine } from './engine.js';
+import { RunService } from './run-service.js';
 import { buildApi } from './api.js';
 import { openSecret } from './security.js';
 import { setRepositoryToken } from './github.js';
@@ -9,12 +8,11 @@ validateConfig();
 const store = await Store.open(config.dataDir, config.databaseUrl);
 const storedGitHubToken = await store.secret('github-token');
 if (storedGitHubToken) setRepositoryToken(openSecret(storedGitHubToken, config.sessionSecret));
-const runner = new HttpRunner();
-const engine = new Engine(store, runner, config.maxActive);
-const app = await buildApi(store, engine, runner);
-engine.start();
+const runs = new RunService(store);
+const app = await buildApi(store, runs);
+runs.start();
 const shutdown = async () => {
-  engine.stop();
+  runs.stop();
   await app.close();
   await store.close();
   process.exit(0);

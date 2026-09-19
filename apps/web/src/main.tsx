@@ -21,7 +21,6 @@ import {
   LayoutDashboard,
   LoaderCircle,
   LogOut,
-  Play,
   Plus,
   RefreshCw,
   Rocket,
@@ -41,14 +40,7 @@ type RunBundle = {
   events: { id: number; time: string; kind: string; message: string }[];
   artifacts: { id: string; name: string; hash: string; createdAt: string }[];
 };
-type SetupState = { codex: boolean; github: boolean; repositories: number };
-type CodexLogin = {
-  id: string;
-  status: 'starting' | 'waiting' | 'connected' | 'failed';
-  loginUrl?: string;
-  code?: string;
-  error?: string;
-};
+type SetupState = { github: boolean; repositories: number };
 type GitHubRepository = {
   name: string;
   fullName: string;
@@ -139,7 +131,7 @@ function Login({ me, refresh }: { me: Me; refresh: () => void }) {
 }
 function Badge({ status }: { status: string }) {
   const icon =
-    status === 'monitoring' || status === 'pass' ? (
+    status === 'monitoring' || status === 'completed' || status === 'pass' ? (
       <CheckCircle2 />
     ) : status === 'failed' || status === 'blocked' || status === 'fail' || status === 'error' ? (
       <XCircle />
@@ -229,15 +221,12 @@ function Shell({
 function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [repos, setRepos] = useState<Repository[]>([]);
-  const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
-  const [form, setForm] = useState({ repositoryId: '', prompt: '' });
   const load = () =>
     Promise.all([api<Run[]>('/api/runs'), api<Repository[]>('/api/repositories')])
       .then(([r, p]) => {
         setRuns(r);
         setRepos(p);
-        if (!form.repositoryId && p[0]) setForm((f) => ({ ...f, repositoryId: p[0].id }));
       })
       .catch((e) => setError(e.message));
   useEffect(() => {
@@ -245,19 +234,8 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
   }, []);
-  async function create(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    try {
-      const run = await api<Run>('/api/runs', { method: 'POST', body: JSON.stringify(form) });
-      setCreating(false);
-      onOpen(run.id);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  const active = runs.filter((r) => !['failed', 'blocked', 'cancelled'].includes(r.status));
-  const complete = runs.filter((r) => ['failed', 'blocked', 'cancelled'].includes(r.status));
+  const active = runs.filter((r) => ['running', 'repairing', 'needs_input', 'awaiting_approval'].includes(r.status));
+  const attention = runs.filter((r) => ['failed', 'blocked', 'cancelled'].includes(r.status));
   return (
     <>
       <header className="page-head">
@@ -266,9 +244,7 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
           <h1>Development runs</h1>
           <p>Seven phases, one accountable record.</p>
         </div>
-        <button className="button primary" onClick={() => setCreating(true)} disabled={!repos.length}>
-          <Plus /> New run
-        </button>
+        <span className="badge monitoring">Native Codex connected</span>
       </header>
       <div className="metric-grid">
         <Metric label="Active runs" value={active.length} detail="Across configured repositories" icon={Activity} />
@@ -284,7 +260,12 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
           detail="Live release monitors"
           icon={Wrench}
         />
-        <Metric label="Failed or blocked" value={complete.length} detail="Needs intervention" icon={AlertTriangle} />
+        <Metric
+          label="Needs attention"
+          value={attention.length}
+          detail="Failed, blocked, or cancelled"
+          icon={AlertTriangle}
+        />
       </div>
       {error && (
         <div className="notice error">
@@ -307,8 +288,8 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
             title="No runs yet"
             text={
               repos.length
-                ? 'Submit a high-level request to begin the lifecycle.'
-                : 'Configure a repository before creating a run.'
+                ? 'Open this repository in the Codex app or CLI and ask for a feature or bug fix.'
+                : 'Connect GitHub and configure a repository, then work normally in Codex.'
             }
           />
         ) : (
@@ -321,7 +302,7 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
                 <div className="run-name">
                   <strong>{run.contract?.summary || run.prompt}</strong>
                   <span>
-                    {run.policy.owner}/{run.policy.repo} · {run.backend} implements · {run.reviewer} reviews
+                    {run.policy.owner}/{run.policy.repo} · native Codex session
                   </span>
                 </div>
                 <div className="run-phase">
@@ -335,53 +316,6 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
           </div>
         )}
       </section>
-      {creating && (
-        <Modal title="Start a governed run" close={() => setCreating(false)}>
-          <form onSubmit={create} className="form">
-            <label>
-              Repository
-              <select
-                required
-                value={form.repositoryId}
-                onChange={(e) => setForm({ ...form, repositoryId: e.target.value })}
-              >
-                {repos.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.owner}/{r.repo}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              High-level request
-              <textarea
-                required
-                minLength={10}
-                rows={6}
-                value={form.prompt}
-                onChange={(e) => setForm({ ...form, prompt: e.target.value })}
-                placeholder="Build the feature or fix the bug. The control plane will derive and verify the lifecycle."
-              />
-            </label>
-            <div className="agent-note">
-              <Bot />
-              <div>
-                <strong>Codex runs the lifecycle</strong>
-                <p>A fresh Codex session performs independent acceptance design and final review.</p>
-              </div>
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="button quiet" onClick={() => setCreating(false)}>
-                Cancel
-              </button>
-              <button className="button primary">
-                <Play />
-                Start lifecycle
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
     </>
   );
 }
@@ -451,7 +385,8 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
             <p className="eyebrow">RUN {run.id.slice(0, 8).toUpperCase()}</p>
             <h1>{run.contract?.summary || run.prompt}</h1>
             <p>
-              {run.policy.owner}/{run.policy.repo} · candidate {run.candidateSha?.slice(0, 9) || 'pending'}
+              {run.policy.owner}/{run.policy.repo} · candidate{' '}
+              {(run.candidateSha || run.candidateDigest)?.slice(0, 9) || 'pending'}
             </p>
           </div>
           <Badge status={run.status} />
@@ -543,8 +478,8 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
             <Evidence title="Design" icon={Boxes} ready={!!run.design}>
               <p>{run.design?.architecture || 'Pending'}</p>
             </Evidence>
-            <Evidence title="Implementation" icon={TerminalSquare} ready={!!run.candidateSha}>
-              <p>{run.candidateSha ? `Revision ${run.candidateSha.slice(0, 12)}` : 'Pending'}</p>
+            <Evidence title="Implementation" icon={TerminalSquare} ready={!!run.candidateDigest}>
+              <p>{run.candidateDigest ? `Verified tree ${run.candidateDigest.slice(0, 12)}` : 'Pending'}</p>
               <small>{run.attempt} repair attempts</small>
             </Evidence>
           </div>
@@ -581,8 +516,8 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
         <section className="panel">
           <div className="panel-head">
             <div>
-              <h2>Independent review</h2>
-              <p>Fresh reviewer context</p>
+              <h2>Self-review</h2>
+              <p>Acceptance evidence checked in the same Codex session</p>
             </div>
             <Search />
           </div>
@@ -650,7 +585,7 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           </div>
         </section>
       </div>
-      {!['monitoring', 'failed', 'cancelled'].includes(run.status) && (
+      {!['monitoring', 'completed', 'failed', 'cancelled'].includes(run.status) && (
         <button className="danger-link" onClick={() => action('cancel')}>
           <X />
           Cancel run
@@ -738,17 +673,17 @@ function RepositoriesPage() {
   const [available, setAvailable] = useState<GitHubRepository[]>([]);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysis, setAnalysis] = useState<string | null>(null);
   const fresh = {
     name: '',
     owner: '',
     repo: '',
     branch: 'main',
     stack: 'typescript' as 'typescript' | 'python',
+    checksJson: '',
     standards: '',
     requiredCiChecks: 'ci',
     ciWaiver: '',
+    deploymentEnabled: false,
     healthUrl: '',
     workflow: 'deploy.yml',
     rollbackWorkflow: 'rollback.yml',
@@ -776,48 +711,6 @@ function RepositoriesPage() {
     const [owner, repo] = selected.fullName.split('/');
     const stack = selected.language?.toLowerCase() === 'python' ? 'python' : 'typescript';
     setForm({ ...form, name: selected.name, owner, repo, branch: selected.defaultBranch, stack });
-    setAnalysis(null);
-  }
-  async function analyze() {
-    setError('');
-    setAnalysis(null);
-    setAnalyzing(true);
-    try {
-      const result = await api<{
-        name: string;
-        stack: 'typescript' | 'python' | 'custom';
-        branch: string;
-        standards: string;
-        requiredCiChecks: string[];
-        ciWaiver: string;
-        workflow: string;
-        rollbackWorkflow: string;
-        environment: string;
-        healthUrl: string;
-        rationale: string;
-      }>('/api/github/analyze', {
-        method: 'POST',
-        body: JSON.stringify({ owner: form.owner, repo: form.repo, branch: form.branch }),
-      });
-      const stack = result.stack === 'custom' ? form.stack : result.stack;
-      setForm((f) => ({
-        ...f,
-        name: result.name || f.name,
-        stack,
-        standards: result.standards || '',
-        requiredCiChecks: (result.requiredCiChecks || []).join(',') || f.requiredCiChecks,
-        ciWaiver: result.ciWaiver || '',
-        workflow: result.workflow || f.workflow,
-        rollbackWorkflow: result.rollbackWorkflow || f.rollbackWorkflow,
-        environment: result.environment || f.environment,
-        healthUrl: result.healthUrl || f.healthUrl,
-      }));
-      setAnalysis(result.rationale || 'Repository analyzed. Review the suggested values before saving.');
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setAnalyzing(false);
-    }
   }
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -831,7 +724,7 @@ function RepositoriesPage() {
           branch: form.branch,
           stack: form.stack,
           standards: form.standards,
-          checks: profiles[form.stack],
+          checks: form.checksJson.trim() ? JSON.parse(form.checksJson) : profiles[form.stack],
           requiredCiChecks: form.requiredCiChecks
             .split(',')
             .map((x) => x.trim())
@@ -839,7 +732,7 @@ function RepositoriesPage() {
           ciWaiver: form.ciWaiver,
           protectedPaths: ['.github/workflows/', '.sdlc/'],
           deployment: {
-            enabled: true,
+            enabled: form.deploymentEnabled,
             environment: form.environment,
             workflow: form.workflow,
             rollbackWorkflow: form.rollbackWorkflow,
@@ -888,7 +781,7 @@ function RepositoriesPage() {
           <article className="repo-card" key={r.id}>
             <div>
               <span className={`stack ${r.stack}`}>{r.stack === 'python' ? 'PY' : 'TS'}</span>
-              <Badge status={r.deployment.enabled ? 'monitoring' : 'blocked'} />
+              <span className="badge monitoring">{r.deployment.enabled ? 'deploy governed' : 'PR only'}</span>
             </div>
             <h2>{r.name}</h2>
             <p>
@@ -930,38 +823,14 @@ function RepositoriesPage() {
                 ))}
               </select>
             </label>
-            <div className="analyze-row">
-              <button
-                type="button"
-                className="button quiet"
-                onClick={analyze}
-                disabled={!form.owner || !form.repo || analyzing}
-              >
-                {analyzing ? <LoaderCircle className="spin" /> : <Bot />}
-                {analyzing ? 'Analyzing with Codex…' : 'Analyze with Codex'}
-              </button>
-              {analysis && (
-                <span className="analyze-done">
-                  <CheckCircle2 size={14} />
-                  Autofilled
-                </span>
-              )}
-            </div>
-            {analysis && (
-              <div className="notice success">
-                <Bot />
-                <div>
-                  <strong>Codex analyzed this repository</strong>
-                  <p>{analysis}</p>
-                </div>
-              </div>
-            )}
             <div className="two">
               <label>
                 Stack
                 <select
                   value={form.stack}
-                  onChange={(e) => setForm({ ...form, stack: e.target.value as 'typescript' | 'python' })}
+                  onChange={(e) =>
+                    setForm({ ...form, stack: e.target.value as 'typescript' | 'python', checksJson: '' })
+                  }
                 >
                   <option value="typescript">TypeScript</option>
                   <option value="python">Python</option>
@@ -972,11 +841,11 @@ function RepositoriesPage() {
                 <input required value={form.branch} onChange={(e) => setForm({ ...form, branch: e.target.value })} />
               </label>
               <label>
-                Required CI check
+                Required CI checks
                 <input
-                  required
                   value={form.requiredCiChecks}
                   onChange={(e) => setForm({ ...form, requiredCiChecks: e.target.value })}
+                  placeholder="ci, security"
                 />
               </label>
               <label>
@@ -989,6 +858,14 @@ function RepositoriesPage() {
               </label>
             </div>
             <label>
+              CI waiver when no checks are required
+              <input
+                value={form.ciWaiver}
+                onChange={(e) => setForm({ ...form, ciWaiver: e.target.value })}
+                placeholder="Document why remote CI is not required"
+              />
+            </label>
+            <label>
               Company and repository standards
               <textarea
                 rows={4}
@@ -997,35 +874,61 @@ function RepositoriesPage() {
                 placeholder="Optional rules specific to this repository"
               />
             </label>
+            <details>
+              <summary>Advanced quality gates</summary>
+              <p className="fine-print">
+                The selected stack provides a safe default. Add project-specific integration or E2E commands here when
+                required.
+              </p>
+              <textarea
+                rows={12}
+                value={form.checksJson || JSON.stringify(profiles[form.stack] || [], null, 2)}
+                onChange={(e) => setForm({ ...form, checksJson: e.target.value })}
+              />
+            </details>
             <h3>Deployment</h3>
             <label>
-              Staging health URL
-              <input
-                required
-                type="url"
-                value={form.healthUrl}
-                onChange={(e) => setForm({ ...form, healthUrl: e.target.value })}
-                placeholder="https://staging.example.com/health"
-              />
+              Release automation
+              <select
+                value={form.deploymentEnabled ? 'enabled' : 'disabled'}
+                onChange={(e) => setForm({ ...form, deploymentEnabled: e.target.value === 'enabled' })}
+              >
+                <option value="disabled">Create PR and stop after CI</option>
+                <option value="enabled">Require approval and deploy</option>
+              </select>
             </label>
-            <div className="two">
-              <label>
-                Deployment workflow
-                <input
-                  required
-                  value={form.workflow}
-                  onChange={(e) => setForm({ ...form, workflow: e.target.value })}
-                />
-              </label>
-              <label>
-                Rollback workflow
-                <input
-                  required
-                  value={form.rollbackWorkflow}
-                  onChange={(e) => setForm({ ...form, rollbackWorkflow: e.target.value })}
-                />
-              </label>
-            </div>
+            {form.deploymentEnabled && (
+              <>
+                <label>
+                  Staging health URL
+                  <input
+                    required
+                    type="url"
+                    value={form.healthUrl}
+                    onChange={(e) => setForm({ ...form, healthUrl: e.target.value })}
+                    placeholder="https://staging.example.com/health"
+                  />
+                </label>
+                <div className="two">
+                  <label>
+                    Deployment workflow
+                    <input
+                      required
+                      value={form.workflow}
+                      onChange={(e) => setForm({ ...form, workflow: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Rollback workflow
+                    <input
+                      required
+                      value={form.rollbackWorkflow}
+                      onChange={(e) => setForm({ ...form, rollbackWorkflow: e.target.value })}
+                    />
+                  </label>
+                </div>
+              </>
+            )}
             <div className="modal-actions">
               <button type="button" className="button quiet" onClick={() => setOpen(false)}>
                 Cancel
@@ -1146,7 +1049,6 @@ function KnowledgePage() {
 }
 function SetupPage({ navigate }: { navigate: (page: string) => void }) {
   const [state, setState] = useState<SetupState | null>(null);
-  const [login, setLogin] = useState<CodexLogin | null>(null);
   const [githubToken, setGithubToken] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -1157,32 +1059,6 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
   useEffect(() => {
     load();
   }, []);
-  useEffect(() => {
-    if (!login || ['connected', 'failed'].includes(login.status)) return;
-    const timer = setInterval(
-      () =>
-        api<CodexLogin>(`/api/setup/codex/${login.id}`)
-          .then((next) => {
-            setLogin(next);
-            if (next.status === 'connected') load();
-          })
-          .catch((e) => setError(e.message)),
-      1500,
-    );
-    return () => clearInterval(timer);
-  }, [login?.id, login?.status]);
-  async function connectCodex() {
-    setError('');
-    setBusy('codex');
-    try {
-      const result = await api<{ id: string }>('/api/setup/codex', { method: 'POST', body: '{}' });
-      setLogin({ id: result.id, status: 'starting' });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy('');
-    }
-  }
   async function connectGithub(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -1197,19 +1073,19 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
       setBusy('');
     }
   }
-  const complete = !!state?.codex && !!state?.github && !!state?.repositories;
+  const complete = !!state?.github && !!state?.repositories;
   return (
     <>
       <header className="page-head">
         <div>
           <p className="eyebrow">THREE-STEP ONBOARDING</p>
           <h1>Connect and start</h1>
-          <p>No terminal authentication or credential files required.</p>
+          <p>Keep your existing Codex login and local project checkout.</p>
         </div>
         {complete && (
           <button className="button primary" onClick={() => navigate('runs')}>
-            <Play />
-            Start a run
+            <LayoutDashboard />
+            View runs
           </button>
         )}
       </header>
@@ -1220,44 +1096,18 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
         </div>
       )}
       <div className="setup-steps">
-        <section className={`setup-card ${state?.codex ? 'complete' : ''}`}>
+        <section className="setup-card complete">
           <div className="setup-number">1</div>
           <div className="setup-copy">
             <span className="eyebrow">CODING AGENT</span>
-            <h2>Connect Codex</h2>
-            <p>Use your existing ChatGPT account. Credentials stay in the isolated worker volume.</p>
-            {login && login.status !== 'connected' && (
-              <div className="device-login">
-                {login.code ? (
-                  <>
-                    <strong>{login.code}</strong>
-                    <a className="button primary" href={login.loginUrl} target="_blank" rel="noreferrer">
-                      Open OpenAI and connect
-                    </a>
-                    <small>Enter the code on the OpenAI page. This screen updates automatically.</small>
-                  </>
-                ) : (
-                  <span>
-                    <LoaderCircle className="spin" /> Preparing secure login…
-                  </span>
-                )}
-                {login.error && <p className="error">{login.error}</p>}
-              </div>
-            )}
+            <h2>Use your Codex app or CLI</h2>
+            <p>
+              Run <code>.\connect-codex.ps1 -ProjectPath "C:\path\to\project"</code> once. There is no second Codex
+              login, clone, or Docker worker.
+            </p>
           </div>
           <div>
-            {state?.codex ? (
-              <Badge status="monitoring" />
-            ) : (
-              <button
-                className="button primary"
-                disabled={busy === 'codex' || login?.status === 'starting' || login?.status === 'waiting'}
-                onClick={connectCodex}
-              >
-                <Bot />
-                Connect Codex
-              </button>
-            )}
+            <Badge status="monitoring" />
           </div>
         </section>
         <section className={`setup-card ${state?.github ? 'complete' : ''}`}>
@@ -1399,8 +1249,8 @@ function SystemPage() {
         </article>
         <article>
           <Boxes />
-          <h2>Isolated execution</h2>
-          <p>Workers receive repository volumes without control-plane or deployment credentials.</p>
+          <h2>Native workspace</h2>
+          <p>Checks run in the developer's current checkout and bind evidence to its exact Git tree.</p>
         </article>
         <article>
           <Rocket />

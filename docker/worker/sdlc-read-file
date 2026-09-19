@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-case "$1" in /*|*..*|*.git*) exit 2;; esac
-[ -f "$1" ] || exit 3
-cat -- "$1"

@@ -6,18 +6,22 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 import {
-  repoAnalysisSchema,
+  contractSchema,
+  designSchema,
+  phases,
+  planSchema,
   repositorySchema,
+  reviewSchema,
+  workspaceStateSchema,
   type Document,
   type Integration,
+  type Repository,
   type Role,
-  type Run,
   type User,
 } from '../../../shared/types.js';
 import { config } from './config.js';
 import type { Store } from './store.js';
-import type { Engine } from './engine.js';
-import type { Runner } from './runner.js';
+import type { RunService } from './run-service.js';
 import { hash, nonce, endpoint, equalSecret, sealSecret } from './security.js';
 import { profiles } from './profiles.js';
 import {
@@ -25,12 +29,10 @@ import {
   githubConfigured,
   oauthUrl,
   oauthUser,
-  repositoryToken,
   setRepositoryToken,
   validateRepositoryToken,
 } from './github.js';
-import { approvalDigest, report } from './gates.js';
-import { jsonFrom, textFrom } from './agents.js';
+import { report } from './gates.js';
 import { inspectIntegration } from './mcp.js';
 declare module 'fastify' {
   interface FastifyRequest {
@@ -41,10 +43,10 @@ declare module 'fastify' {
 }
 const error = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
 const roles: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
-export async function buildApi(store: Store, engine: Engine, runner: Runner) {
+export async function buildApi(store: Store, runs: RunService) {
   const app = Fastify({
     logger: { redact: ['req.headers.authorization', 'req.headers.cookie', 'body.token', 'body.password'] },
-    bodyLimit: 2 * 1024 * 1024,
+    bodyLimit: 20 * 1024 * 1024,
   });
   await app.register(cookie, { secret: config.sessionSecret });
   app.setErrorHandler((err, _req, reply) => {
@@ -72,7 +74,11 @@ export async function buildApi(store: Store, engine: Engine, runner: Runner) {
     if (!req.user) throw error(401, 'Sign in required');
     if (req.headers['x-csrf-token'] !== req.csrf) throw error(403, 'CSRF token missing or invalid');
     const origin = req.headers.origin;
-    if (origin && origin !== config.publicUrl) throw error(403, 'Request origin rejected');
+    const allowedOrigins = new Set([
+      config.publicUrl,
+      ...(!config.production ? ['http://127.0.0.1:5173', 'http://localhost:5173'] : []),
+    ]);
+    if (origin && !allowedOrigins.has(origin)) throw error(403, 'Request origin rejected');
   });
   const requireRole = (req: FastifyRequest, role: Role) => {
     if (!req.user) throw error(401, 'Sign in required');
@@ -157,34 +163,16 @@ export async function buildApi(store: Store, engine: Engine, runner: Runner) {
   });
   app.get('/api/readiness', async (req) => {
     requireRole(req, 'viewer');
-    let worker;
-    try {
-      worker = await runner.ready();
-    } catch (e) {
-      worker = { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
-    return { worker, github: githubConfigured(), database: true, deploymentRule: 'explicit approval required' };
+    return {
+      execution: 'native Codex app or CLI',
+      github: githubConfigured(),
+      database: true,
+      deploymentRule: 'explicit approval required',
+    };
   });
   app.get('/api/setup', async (req) => {
     requireRole(req, 'admin');
-    let codex = false;
-    try {
-      codex = (await runner.codexStatus()).connected;
-    } catch {
-      /* readiness explains runner failures */
-    }
-    return { codex, github: githubConfigured(), repositories: (await store.repositories()).length };
-  });
-  app.post('/api/setup/codex', async (req) => {
-    const actor = requireRole(req, 'admin');
-    const session = await runner.startCodexLogin();
-    await store.audit(actor.login, 'setup.codex.start', { id: session.id });
-    return session;
-  });
-  app.get('/api/setup/codex/:id', async (req) => {
-    requireRole(req, 'admin');
-    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
-    return runner.codexLogin(id);
+    return { github: githubConfigured(), repositories: (await store.repositories()).length };
   });
   app.post('/api/setup/github', async (req) => {
     const actor = requireRole(req, 'admin');
@@ -199,40 +187,6 @@ export async function buildApi(store: Store, engine: Engine, runner: Runner) {
     requireRole(req, 'admin');
     if (!githubConfigured()) throw error(409, 'Connect GitHub first');
     return availableRepositories();
-  });
-  app.post('/api/github/analyze', async (req) => {
-    const actor = requireRole(req, 'admin');
-    const { owner, repo, branch } = z
-      .object({
-        owner: z.string().regex(/^[\w.-]+$/),
-        repo: z.string().regex(/^[\w.-]+$/),
-        branch: z
-          .string()
-          .min(1)
-          .max(200)
-          .refine((v) => !v.startsWith('-') && !v.includes('..')),
-      })
-      .parse(req.body);
-    if (!githubConfigured()) throw error(409, 'Connect GitHub first');
-    const prompt = `You are onboarding a GitHub repository into a governed SDLC control plane. Inspect the repository and determine how it is built, tested, and deployed. Return only a valid JSON object with this exact shape: {"name":"string","stack":"typescript|python|custom","branch":"string","standards":"string","requiredCiChecks":["string"],"ciWaiver":"string","workflow":"string","rollbackWorkflow":"string","environment":"string","healthUrl":"string","rationale":"string"}
-Rules:
-- name: a short human-readable repository name.
-- stack: typescript if package.json is the primary manifest, python if pyproject.toml/requirements.txt/uv.lock is, otherwise custom.
-- branch: the repository default branch.
-- standards: 1-3 concise repository-specific engineering standards you can support with evidence from the repository, or an empty string.
-- requiredCiChecks: exact CI check names a GitHub user sees on this repository (workflow job names, or the workflow name when jobs have no name). Empty array when none exist.
-- ciWaiver: empty string unless the repository clearly documents a CI waiver.
-- workflow: the deployment workflow file name when one exists (e.g. deploy.yml, release.yml), otherwise "deploy.yml".
-- rollbackWorkflow: the rollback workflow file name when one exists, otherwise "rollback.yml".
-- environment: the environment this repository deploys to, based on evidence; default "staging".
-- healthUrl: an HTTPS health endpoint when discoverable from configuration or README, otherwise empty string.
-- rationale: one sentence summarizing what you found and any assumptions.
-Do not invent values. Prefer empty/default values over guesses.`;
-    const job = await runner.analyze({ owner, repo, branch, prompt, githubToken: await repositoryToken() });
-    if (job.exitCode) throw error(502, `Repository analysis failed: ${job.stderr.slice(-600)}`);
-    const value = repoAnalysisSchema.parse(jsonFrom(textFrom(job, 'codex')));
-    await store.audit(actor.login, 'repository.analyze', { owner, repo, value });
-    return value;
   });
   app.get('/api/profiles', async (req) => {
     requireRole(req, 'admin');
@@ -334,116 +288,101 @@ Do not invent values. Prefer empty/default values over guesses.`;
   });
   app.post('/api/runs', async (req) => {
     const actor = requireRole(req, 'operator');
-    const body = z.object({ repositoryId: z.string().uuid(), prompt: z.string().min(10).max(100000) }).parse(req.body);
-    const repository = await store.get<Awaited<ReturnType<Store['repositories']>>[number]>(
-      'repository',
-      body.repositoryId,
-    );
+    const body = z
+      .object({
+        repositoryId: z.string().uuid(),
+        prompt: z.string().min(10).max(100000),
+        workspace: workspaceStateSchema,
+      })
+      .parse(req.body);
+    const repository = await store.get<Repository>('repository', body.repositoryId);
     if (!repository) throw error(404, 'Repository not found');
-    const at = new Date().toISOString();
-    const run: Run = {
-      id: randomUUID(),
-      ...body,
-      backend: 'codex',
-      reviewer: 'codex',
-      status: 'queued',
-      phase: 'planning',
-      step: 'preflight',
-      attempt: 0,
-      createdAt: at,
-      updatedAt: at,
-      policy: structuredClone(repository),
-      context: [],
-      baseline: [],
-      gates: [],
-      limits: { repairs: 3, minutes: 90, agentMinutes: 20 },
-      usage: { inputTokens: 0, outputTokens: 0, costUsd: null },
-      repeatedFailures: 0,
-    };
-    try {
-      await store.insertRun(run);
-    } catch {
-      throw error(409, 'This repository already has an active run');
-    }
-    await store.audit(actor.login, 'run.create', { id: run.id, repositoryId: run.repositoryId });
-    engine.wake();
-    return run;
+    return runs.create(repository, body.prompt, body.workspace, actor.login);
+  });
+  app.post('/api/runs/:id/plan', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    return runs.savePlan(id, planSchema.parse(req.body), actor.login);
+  });
+  app.post('/api/runs/:id/requirements', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    return runs.saveRequirements(id, contractSchema.parse(req.body), actor.login);
+  });
+  app.post('/api/runs/:id/design', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    return runs.saveDesign(id, designSchema.parse(req.body), actor.login);
+  });
+  app.post('/api/runs/:id/progress', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const body = z
+      .object({ phase: z.enum(phases), step: z.string().min(1).max(100), message: z.string().min(1).max(2000) })
+      .parse(req.body);
+    return runs.progress(id, body.phase, body.step, body.message, actor.login);
+  });
+  app.post('/api/runs/:id/verify', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const resultSchema = z.object({
+      exitCode: z.number().int(),
+      stdout: z.string().max(300000),
+      stderr: z.string().max(300000),
+      durationMs: z.number().nonnegative(),
+      files: z.record(z.string(), z.string().max(300000)),
+    });
+    const body = z
+      .object({
+        candidateDigest: z.string().regex(/^[0-9a-f]{40}$/),
+        results: z.array(z.object({ commandId: z.string(), result: resultSchema })).max(20),
+      })
+      .parse(req.body);
+    return runs.verify(id, body.candidateDigest, body.results, actor.login);
+  });
+  app.post('/api/runs/:id/review', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    return runs.saveReview(id, reviewSchema.parse(req.body), actor.login);
+  });
+  app.post('/api/runs/:id/publish', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const body = z
+      .object({
+        candidateDigest: z.string().regex(/^[0-9a-f]{40}$/),
+        candidateSha: z.string().regex(/^[0-9a-f]{40}$/),
+        branch: z.string().min(1).max(200),
+      })
+      .parse(req.body);
+    return runs.publish(id, body.candidateDigest, body.candidateSha, body.branch, actor.login);
+  });
+  app.post('/api/runs/:id/sync', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    return runs.sync(id, actor.login);
   });
   app.post('/api/runs/:id/answer', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
     const body = z.object({ answer: z.string().min(1).max(10000) }).parse(req.body);
-    const run = await store.getRun(id);
-    if (!run || run.status !== 'needs_input') throw error(409, 'Run is not awaiting input');
-    run.answer = body.answer;
-    if (run.contract) {
-      run.contract.assumptions.push(`Stakeholder answer: ${body.answer}`);
-      run.contract.clarification = null;
-    }
-    run.status = 'running';
-    run.phase = 'design';
-    run.step = 'blueprint';
-    run.question = undefined;
-    await store.saveRun(run);
-    await store.audit(actor.login, 'run.answer', { id });
-    engine.wake();
-    return run;
+    return runs.answer(id, body.answer, actor.login);
   });
   app.post('/api/runs/:id/approval', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
     const body = z.object({ approved: z.boolean(), digest: z.string() }).parse(req.body);
-    const run = await store.getRun(id);
-    if (!run || run.status !== 'awaiting_approval' || run.step !== 'approval' || !run.approval)
-      throw error(409, 'Run is not awaiting deployment approval');
-    if (body.digest !== run.approval.digest || body.digest !== approvalDigest(run))
-      throw error(409, 'Candidate changed; reload approval details');
-    run.approval = {
-      digest: body.digest,
-      approvedBy: body.approved ? actor.login : undefined,
-      approvedAt: new Date().toISOString(),
-      rejected: !body.approved,
-    };
-    if (body.approved) {
-      run.status = 'running';
-    } else {
-      run.status = 'blocked';
-      run.blocker = `Deployment rejected by ${actor.login}`;
-    }
-    await store.saveRun(run);
-    await store.audit(actor.login, body.approved ? 'deployment.approve' : 'deployment.reject', {
-      id,
-      digest: body.digest,
-      environment: run.policy.deployment.environment,
-      sha: run.candidateSha,
-    });
-    engine.wake();
-    return run;
+    return runs.approve(id, body.approved, body.digest, actor.login);
   });
   app.post('/api/runs/:id/cancel', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
-    const run = await store.getRun(id);
-    if (!run || ['monitoring', 'failed', 'cancelled'].includes(run.status)) throw error(409, 'Run cannot be cancelled');
-    run.status = 'cancelled';
-    run.blocker = `Cancelled by ${actor.login}`;
-    await store.revoke(id);
-    await store.saveRun(run);
-    await runner.destroy(id).catch(() => undefined);
-    await store.audit(actor.login, 'run.cancel', { id });
-    return run;
+    return runs.cancel(id, actor.login);
   });
   app.post('/api/runs/:id/resume', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
-    const run = await store.getRun(id);
-    if (!run || !['blocked', 'failed'].includes(run.status)) throw error(409, 'Run is not resumable');
-    run.status = run.phase === 'coding' ? 'repairing' : 'running';
-    run.blocker = undefined;
-    await store.saveRun(run);
-    await store.audit(actor.login, 'run.resume', { id });
-    engine.wake();
-    return run;
+    return runs.resume(id, actor.login);
   });
   app.get('/api/runs/:id/report', async (req, reply) => {
     requireRole(req, 'viewer');
