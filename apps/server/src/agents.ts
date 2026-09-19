@@ -1,7 +1,7 @@
 import type { AgentResult, Backend, JobResult, Run } from '../../../shared/types.js';
 import type { z } from 'zod';
 import type { Runner } from './runner.js';
-function textFrom(result: JobResult, backend: Backend) {
+export function textFrom(result: JobResult, backend: Backend) {
   let text = '';
   for (const line of result.stdout.split(/\r?\n/)) {
     try {
@@ -11,7 +11,7 @@ function textFrom(result: JobResult, backend: Backend) {
   }
   return text || result.stdout;
 }
-function jsonFrom(text: string): unknown {
+export function jsonFrom(text: string): unknown {
   const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   try { return JSON.parse(cleaned); } catch { /* find a complete trailing object */ }
   for (let start = cleaned.indexOf('{'); start >= 0; start = cleaned.indexOf('{', start + 1)) {

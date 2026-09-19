@@ -5,15 +5,16 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { repositorySchema, type Document, type Integration, type Role, type Run, type User } from '../../../shared/types.js';
+import { repoAnalysisSchema, repositorySchema, type Document, type Integration, type Role, type Run, type User } from '../../../shared/types.js';
 import { config } from './config.js';
 import type { Store } from './store.js';
 import type { Engine } from './engine.js';
 import type { Runner } from './runner.js';
 import { hash, nonce, endpoint, equalSecret, sealSecret } from './security.js';
 import { profiles } from './profiles.js';
-import { availableRepositories, githubConfigured, oauthUrl, oauthUser, setRepositoryToken, validateRepositoryToken } from './github.js';
+import { availableRepositories, githubConfigured, oauthUrl, oauthUser, repositoryToken, setRepositoryToken, validateRepositoryToken } from './github.js';
 import { approvalDigest, report } from './gates.js';
+import { jsonFrom, textFrom } from './agents.js';
 import { inspectIntegration } from './mcp.js';
 declare module 'fastify' { interface FastifyRequest { user?: User; sessionId?: string; csrf?: string } }
 const error = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
@@ -47,6 +48,30 @@ export async function buildApi(store: Store, engine: Engine, runner: Runner) {
   app.get('/api/setup/codex/:id', async req => { requireRole(req, 'admin'); const { id } = z.object({ id: z.string().uuid() }).parse(req.params); return runner.codexLogin(id); });
   app.post('/api/setup/github', async req => { const actor = requireRole(req, 'admin'); const { token } = z.object({ token: z.string().min(20).max(500) }).parse(req.body); const login = await validateRepositoryToken(token); await store.setSecret('github-token', sealSecret(token, config.sessionSecret)); setRepositoryToken(token); await store.audit(actor.login, 'setup.github.connect', { login }); return { connected: true, login }; });
   app.get('/api/github/repositories', async req => { requireRole(req, 'admin'); if (!githubConfigured()) throw error(409, 'Connect GitHub first'); return availableRepositories(); });
+  app.post('/api/github/analyze', async req => {
+    const actor = requireRole(req, 'admin');
+    const { owner, repo, branch } = z.object({ owner: z.string().regex(/^[\w.-]+$/), repo: z.string().regex(/^[\w.-]+$/), branch: z.string().min(1).max(200).refine(v => !v.startsWith('-') && !v.includes('..')) }).parse(req.body);
+    if (!githubConfigured()) throw error(409, 'Connect GitHub first');
+    const prompt = `You are onboarding a GitHub repository into a governed SDLC control plane. Inspect the repository and determine how it is built, tested, and deployed. Return only a valid JSON object with this exact shape: {"name":"string","stack":"typescript|python|custom","branch":"string","standards":"string","requiredCiChecks":["string"],"ciWaiver":"string","workflow":"string","rollbackWorkflow":"string","environment":"string","healthUrl":"string","rationale":"string"}
+Rules:
+- name: a short human-readable repository name.
+- stack: typescript if package.json is the primary manifest, python if pyproject.toml/requirements.txt/uv.lock is, otherwise custom.
+- branch: the repository default branch.
+- standards: 1-3 concise repository-specific engineering standards you can support with evidence from the repository, or an empty string.
+- requiredCiChecks: exact CI check names a GitHub user sees on this repository (workflow job names, or the workflow name when jobs have no name). Empty array when none exist.
+- ciWaiver: empty string unless the repository clearly documents a CI waiver.
+- workflow: the deployment workflow file name when one exists (e.g. deploy.yml, release.yml), otherwise "deploy.yml".
+- rollbackWorkflow: the rollback workflow file name when one exists, otherwise "rollback.yml".
+- environment: the environment this repository deploys to, based on evidence; default "staging".
+- healthUrl: an HTTPS health endpoint when discoverable from configuration or README, otherwise empty string.
+- rationale: one sentence summarizing what you found and any assumptions.
+Do not invent values. Prefer empty/default values over guesses.`;
+    const job = await runner.analyze({ owner, repo, branch, prompt, githubToken: await repositoryToken() });
+    if (job.exitCode) throw error(502, `Repository analysis failed: ${job.stderr.slice(-600)}`);
+    const value = repoAnalysisSchema.parse(jsonFrom(textFrom(job, 'codex')));
+    await store.audit(actor.login, 'repository.analyze', { owner, repo, value });
+    return value;
+  });
   app.get('/api/profiles', async req => { requireRole(req, 'admin'); return profiles; });
   app.get('/api/repositories', async req => { requireRole(req, 'viewer'); return store.repositories(); });
   app.post('/api/repositories', async req => { const actor = requireRole(req, 'admin'); const input = repositorySchema.parse(req.body); if (input.deployment.enabled) { endpoint(input.deployment.healthUrl, !config.production); if (!input.deployment.workflow || !input.deployment.rollbackWorkflow) throw error(400, 'Deployment and rollback workflows are required'); } if (!input.requiredCiChecks.length && !input.ciWaiver.trim()) throw error(400, 'Configure required CI checks or a documented CI waiver'); const existing = (await store.repositories()).find(r => r.owner === input.owner && r.repo === input.repo); const repository = { ...input, id: existing?.id || randomUUID(), version: (existing?.version || 0) + 1, createdAt: new Date().toISOString() }; await store.put('repository', repository); await store.audit(actor.login, existing ? 'repository.update' : 'repository.create', { id: repository.id, version: repository.version }); return repository; });

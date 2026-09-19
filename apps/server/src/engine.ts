@@ -58,7 +58,7 @@ export class Engine {
       const ready = await this.runner.ready(); if (!ready.ok) { run.status = 'blocked'; run.blocker = `Execution environment not ready: ${JSON.stringify(ready)}`; return this.save(run, token, 'blocked', run.blocker); }
       if (!(await this.runner.codexStatus()).connected) { run.status = 'blocked'; run.blocker = 'Codex is not connected. Open System setup and connect Codex.'; return this.save(run, token, 'blocked', run.blocker); }
       if (!githubConfigured()) { run.status = 'blocked'; run.blocker = 'GitHub repository credentials are not configured'; return this.save(run, token, 'blocked', run.blocker); }
-      run.baseSha = await this.runner.prepare(run.id, run.policy.owner, run.policy.repo, run.policy.branch, await repositoryToken()); run.branch = `sdlc/${run.id}`;
+      run.baseSha = (await this.runner.prepare(run.id, run.policy.owner, run.policy.repo, run.policy.branch, await repositoryToken())).sha; run.branch = `sdlc/${run.id}`;
       const documents = await this.store.searchDocuments(run.prompt); run.context = documents.map(d => ({ id: d.id, title: d.title, version: d.version, hash: d.hash, excerpt: d.content.slice(0, 12000) }));
       for (const integration of (await this.store.integrations()).filter(i => i.enabled)) for (const call of integration.contextCalls || []) {
         const args = template(call.arguments, run) as Record<string, unknown>;
@@ -110,7 +110,7 @@ export class Engine {
       const failed = run.gates.filter(g => g.required && g.status !== 'pass'); if (failed.length) return this.repair(run, token, failed.map(g => `${g.id}: ${g.status}; ${g.findings.join('; ')}`).join('\n'));
       run.step = 'review'; await this.save(run, token, 'gate', 'Automated verification passed'); return;
     }
-    const diff = await this.runner.diff(run.id, run.baseSha!);
+    const diff = (await this.runner.diff(run.id, run.baseSha!)).diff;
     const { value, result } = await this.agents.structured(run, run.reviewer, 'independent-review', `Act as an independent senior code reviewer. You did not implement this change. Review the diff against every acceptance criterion, design, company standards, security, error handling, and tests. Cite concrete evidence. JSON shape: ${reviewShape}\n\nContract: ${JSON.stringify(run.contract)}\nDesign: ${JSON.stringify(run.design)}\nGates: ${JSON.stringify(run.gates)}\nDiff:\n${diff.slice(0, 300000)}`, reviewSchema);
     run.review = value; await this.store.artifact(run, 'review-agent.log', result.logs); await this.store.artifact(run, 'review.json', JSON.stringify(value, null, 2)); const failures = completionFailures(run); if (failures.length) return this.repair(run, token, failures.join('\n') + '\n' + value.findings.filter(f => ['high','critical'].includes(f.severity)).map(f => `${f.file}:${f.line} ${f.description}; correction: ${f.correction}`).join('\n'));
     run.phase = 'deployment'; run.step = 'publish'; await this.save(run, token, 'stage', 'Testing and independent review passed');

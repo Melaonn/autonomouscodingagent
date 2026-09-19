@@ -25,6 +25,12 @@ export const repositorySchema = z.object({ name: z.string().min(1).max(120), own
   deployment: deploymentSchema.default({ enabled: false, environment: 'staging', workflow: 'deploy.yml', rollbackWorkflow: 'rollback.yml', healthUrl: '', monitorIntervalSeconds: 300, automaticMaintenance: false }) });
 export type RepositoryConfig = z.infer<typeof repositorySchema>;
 export interface Repository extends RepositoryConfig { id: string; version: number; createdAt: string }
+export const repoAnalysisSchema = z.object({ name: z.string().min(1).max(120), stack: z.enum(['typescript', 'python', 'custom']),
+  branch: z.string().min(1).default('main'), standards: z.string().max(60000).default(''),
+  requiredCiChecks: z.array(z.string()).default([]), ciWaiver: z.string().default(''),
+  workflow: z.string().default('deploy.yml'), rollbackWorkflow: z.string().default('rollback.yml'),
+  environment: z.string().default('staging'), healthUrl: z.string().default(''), rationale: z.string().default('') });
+export type RepoAnalysis = z.infer<typeof repoAnalysisSchema>;
 export const criterionSchema = z.object({ id: z.string().min(1), description: z.string().min(1),
   evidence: z.enum(['test', 'review', 'human']), checkIds: z.array(z.string()), category: z.enum(['functional', 'security', 'performance', 'reliability', 'usability']) });
 export const contractSchema = z.object({ summary: z.string(), criteria: z.array(criterionSchema).min(1),

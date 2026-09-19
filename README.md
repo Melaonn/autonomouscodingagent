@@ -1,56 +1,76 @@
 # SDLC Control Plane
 
-This repository contains a self-hosted control plane that drives Codex through all seven SDLC phases. Separate Codex sessions implement, author independent acceptance tests, and review. The controller decides whether evidence is sufficient to continue.
+A local control plane for governed software work with Codex. Start a feature or bug request from the Codex app, Windows CLI, or dashboard. A background Codex CLI worker implements the change; the controller runs quality gates, requests repairs, records evidence, and pauses before deployment.
 
-## Lifecycle
+## Start locally on Windows
 
-1. **Planning** records scope, dependencies, effort, cost assumptions, schedule, and risks.
-2. **Requirements** creates measurable functional and non-functional acceptance criteria and pauses for consequential stakeholder decisions.
-3. **Design** records architecture, API/data/UI effects, compatibility, security boundaries, and independent acceptance tests.
-4. **Coding** gives the immutable contract and design to the selected worker in an isolated repository volume.
-5. **Testing** runs configured build, lint, types, unit, integration, E2E, dependency, SAST, secret, protected acceptance, and independent review gates. Failures enter a bounded repair loop.
-6. **Deployment** creates a draft PR, waits for required GitHub checks, marks the PR ready, then requests approval for an exact candidate/environment/workflow digest. An approved GitHub deployment workflow runs, followed by a health check and automatic rollback dispatch on failure.
-7. **Maintenance** monitors the approved environment. Two consecutive health failures create an incident run that goes through the same lifecycle. Any resulting release still requires deployment approval.
+Requirements: Docker Desktop with the Linux engine. For chat integration, also install Node.js 24+, npm, Git, and Codex CLI.
 
-The terminal success condition is `monitoring`: all seven phases have been entered and the release is under maintenance. `blocked`, `failed`, `cancelled`, `needs_input`, and `awaiting_approval` are explicit non-success states.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start.ps1
+```
 
-## Smooth local setup
+The script builds the application and worker images, starts PostgreSQL and the services, and opens `http://localhost:4310`. On first launch it prints an administrator password. Sign in, connect Codex through device login, connect GitHub, and select a repository. **Analyze with Codex** can suggest repository settings; review them before saving.
 
-The normal user flow does not require CLI authentication or editing credential paths.
+To connect a normal Codex conversation:
 
-1. Install and start Docker Desktop with the Linux engine.
-2. Run `powershell -ExecutionPolicy Bypass -File .\start.ps1`.
-3. Open `http://localhost:4310` and sign in with the administrator password chosen by the script.
-4. Select **Connect Codex**, complete the OpenAI device page, paste a fine-grained GitHub token, and choose a repository.
+```powershell
+npm ci
+.\connect-codex.ps1 -EnvironmentFile '.env.compose' -ProjectPath 'C:\path\to\project'
+```
 
-The script generates infrastructure secrets, builds the application and worker images, starts PostgreSQL, and opens the browser. Codex credentials remain in the dedicated `sdlc-codex-auth` Docker volume. The GitHub token is verified and stored encrypted with the server session secret.
+Restart Codex or open a fresh CLI session in that project, then say:
 
-For source development, copy `.env.example` to `.env`, then run `npm run runner` and `npm run dev`. The same browser setup page configures Codex and GitHub.
+> Add task priority support using the SDLC workflow.
 
-## Single-server deployment
+The installer registers the local `sdlc` MCP server and appends routing instructions to the project's `AGENTS.md`. The conversation starts and follows a run; the background worker owns implementation. It starts from the configured remote branch and does not include uncommitted local changes. Keep Docker and the harness services running.
 
-Use a dedicated Linux VM with Docker because the runner creates isolated verification containers and therefore needs a Docker daemon. Point a domain at the VM, clone this repository, and run `bash deploy/deploy.sh`. The script asks only for the domain and an administrator password, generates the remaining secrets, and launches PostgreSQL, the control plane, runner, worker image, and Caddy HTTPS proxy.
+See [chat setup and troubleshooting](docs/codex-chat.md) for source-development setup, available tools, and limitations.
 
-The browser then handles Codex and GitHub connection. Compose uses the exact Docker volume name `sdlc-codex-auth`, so authentication survives restarts. The runner alone receives the Docker socket. Agent and verification containers do not receive the control-plane database, GitHub deployment credentials, or Docker socket.
+## What a run does
 
-The deployment workflow must accept `workflow_dispatch` inputs named `sdlc_run_id`, `candidate_sha`, and `environment`. The rollback workflow must accept the same inputs. Store environment credentials in GitHub Environments and enforce any additional environment reviewers there.
+| Phase | Evidence and behavior |
+| --- | --- |
+| Planning | Repository baseline, scope, steps, dependencies, effort, and risk assumptions |
+| Requirements | Measurable acceptance criteria and clarification when needed |
+| Design | Architecture, API/data changes, compatibility, and independently generated acceptance tests |
+| Coding | Codex implementation in an isolated repository volume |
+| Testing | Build, lint, types, tests, scanners, acceptance checks, independent review, and a bounded repair loop |
+| Deployment | PR, required GitHub CI, explicit candidate approval, workflow dispatch, health check, and rollback dispatch on failure |
+| Maintenance | Periodic health checks and incident runs after repeated failures |
 
-## Repository onboarding
+The standard TypeScript profile contains ten gates: install, build, lint, types, unit, integration, E2E, dependency audit, Semgrep, and Gitleaks. The Python profile differs and needs project-specific E2E checks. A scanner error is not a pass. The bundled Semgrep rules are a small starting set, not a comprehensive company security policy.
 
-The TypeScript and Python profiles are strict starting points. Onboarding must name all required remote CI checks, or record an explicit waiver. It must also configure an HTTPS health endpoint and deployment/rollback workflows to complete all seven phases.
+`awaiting_approval`, `needs_input`, `failed`, and `blocked` are not successful completion. `monitoring` means the configured release checks passed and maintenance monitoring is active; it does not guarantee defect-free software.
 
-Quality command arguments are stored as arrays and executed without an application shell. Setup may access the network; all verification commands run without network. Independent acceptance files are mounted read-only outside the candidate workspace. Missing or malformed reports, zero required tests, timeouts, scanner errors, stale evidence, protected path edits, and high/critical review findings prevent completion.
+## Repository and company configuration
 
-## Company integration
+Configure exact CI check names or an explicit waiver, commands and report formats, protected paths, company standards, deployment and rollback workflows, and a health URL. Workflows accept `sdlc_run_id`, `candidate_sha`, and `environment` through `workflow_dispatch`.
 
-Administrators can version approved Markdown/text sources and configure allowlisted Streamable HTTP MCP servers. MCP context calls use administrator-owned argument templates with `{{prompt}}` and `{{repo}}` substitutions; a configured call that fails blocks discovery. Each run records the source versions and content hashes included in its context. Retrieved text supplies evidence; it cannot grant tool authority or change mandatory policy.
+Approved company documents are versioned and retrieved for each task. Allowlisted external MCP tools can supply company context. Runs record source versions and hashes. Context guides the model; executable gates enforce the configured completion policy.
 
-## Validation
+The public [demo repository](https://github.com/Melaonn/sdlc-harness-demo) provides a small TypeScript task API and simulated release workflows. Those workflows do not deploy an application. Its repository-availability health URL is not an application health check.
 
-Run `npm run check`. Core tests cover stale-evidence rejection, missing and zero-test reports, deployment approval invalidation, active-run exclusion, worker lease fencing, and company-knowledge retrieval. A release also requires live runs through both agent adapters, a TypeScript and Python reference repository, GitHub PR/Actions, an approved deployment, a failed-health rollback exercise, and crash recovery.
+## Development and verification
 
-## Security boundary
+```powershell
+npm ci
+Copy-Item .env.example .env
+# Set unique local login, session, and runner secrets in .env, then:
+docker build -t sdlc-worker:local -f docker/worker/Dockerfile .
+npm run runner
+# In another terminal:
+npm run dev
+```
 
-This first release targets a trusted single engineering team running authorized repositories. The runner is a privileged infrastructure component because it owns the Docker socket. Deploy it on a dedicated host, restrict host access, use dedicated agent credentials, and keep the control plane and runner token on a private network. Candidate code remains untrusted.
+Development uses `http://127.0.0.1:5173` and the API at port 4310. Register chat with `./connect-codex.ps1 -EnvironmentFile '.env' -ProjectPath 'C:\path\to\project'`. Do not run Compose and development servers on the same ports.
 
-Network egress from agent/setup containers currently uses the Docker bridge network. Domain-level egress allowlisting requires an organization proxy and should be added before processing sensitive private repositories. This limitation is visible and must not be described as a completed enterprise security control.
+Run `npm run check` for type checking, lint, tests, and build. Dashboard E2E tests run separately with `npm run test:e2e` against a fresh development instance.
+
+## Documentation
+
+- [Codex chat integration](docs/codex-chat.md): installation, usage, tools, and troubleshooting.
+- [End-to-end architecture](HOW-IT-WORKS.md): components, state transitions, gates, and security boundaries.
+- [Project instruction template](docs/codex-project-instructions.md): the routing block installed in target repositories.
+
+Local environment files, credentials, runtime data, reports, and editor metadata are excluded from Git. No cloud deployment is required for local use. Optional Linux hosting scripts remain under `deploy/`; production hardening and live release validation are separate work.

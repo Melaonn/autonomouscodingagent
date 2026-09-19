@@ -9,7 +9,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Start Docker Desktop, then run this file again
 
 $generatedPassword = $false
 if (-not (Test-Path -LiteralPath $environmentFile)) {
-  function New-Secret { [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant() }
+  function New-Secret {
+    $bytes = New-Object byte[] 32
+    ([System.Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($bytes)
+    ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+  }
   if (-not $AdminPassword) { $AdminPassword = "sdlc-$((New-Secret).Substring(0,20))"; $generatedPassword = $true }
   if ($AdminPassword.Length -lt 16) { throw 'Administrator password must have at least 16 characters.' }
   @(
@@ -21,11 +25,14 @@ if (-not (Test-Path -LiteralPath $environmentFile)) {
     "POSTGRES_PASSWORD=$(New-Secret)"
     'CODEX_AUTH_MOUNT=sdlc-codex-auth'
     'MAX_ACTIVE_RUNS=2'
-  ) | Set-Content -LiteralPath $environmentFile -Encoding utf8
+  ) | Set-Content -LiteralPath $environmentFile -Encoding Ascii
 }
 
 Push-Location $root
-try { docker compose --env-file $environmentFile up --build -d }
+try {
+  docker compose --env-file $environmentFile up --build -d
+  if ($LASTEXITCODE -ne 0) { throw 'Harness startup failed. Check Docker Compose output above.' }
+}
 finally { Pop-Location }
 Start-Process 'http://localhost:4310'
 Write-Output 'SDLC Control Plane is ready at http://localhost:4310'

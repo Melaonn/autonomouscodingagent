@@ -8,7 +8,7 @@ class FakeRunner implements Runner {
   codexStatus = async () => ({ connected: true });
   startCodexLogin = async () => ({ id: crypto.randomUUID() });
   codexLogin = async (id: string) => ({ id, status: 'connected' as const });
-  prepare = async () => 'a'.repeat(40);
+  prepare = async () => ({ sha: 'a'.repeat(40) });
   async agent(job: AgentJob): Promise<JobResult> {
     let object: unknown;
     if (job.prompt.includes('delivery lead')) object = { scope: 'Add behavior', steps: ['implement'], dependencies: [], estimatedEffort: 'one day', costEstimate: 'existing subscriptions', schedule: ['day one'], risks: [] };
@@ -22,9 +22,10 @@ class FakeRunner implements Runner {
   }
   command = async () => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1, files: {} });
   commit = async () => ({ sha: 'b'.repeat(40), changed: ['src/feature.ts'] });
-  diff = async () => 'diff --git a/src/feature.ts b/src/feature.ts';
+  diff = async () => ({ diff: 'diff --git a/src/feature.ts b/src/feature.ts' });
   push = async () => undefined;
   destroy = async () => undefined;
+  analyze = async () => ({ exitCode: 0, stdout: '{}', stderr: '', durationMs: 1, files: {} });
 }
 function repository(): Repository { const check: CheckCommand = { id: 'check', label: 'check', argv: ['true'], required: true, kind: 'unit', report: 'exit', reportPath: '', timeoutSeconds: 30, baselineAllowed: false }; return { id: crypto.randomUUID(), name: 'fixture', owner: 'team', repo: 'fixture', branch: 'main', stack: 'custom', standards: 'Preserve authorization', checks: [check], requiredCiChecks: ['ci'], ciWaiver: '', protectedPaths: ['.github/workflows/'], version: 1, createdAt: new Date().toISOString(), deployment: { enabled: true, environment: 'staging', workflow: 'deploy.yml', rollbackWorkflow: 'rollback.yml', healthUrl: 'https://example.com/health', monitorIntervalSeconds: 300, automaticMaintenance: false } }; }
 describe('workflow engine', () => {

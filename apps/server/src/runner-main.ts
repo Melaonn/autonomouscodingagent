@@ -1,14 +1,12 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
 import Docker from 'dockerode';
-import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { z } from 'zod';
 import { backendSchema, commandSchema } from '../../../shared/types.js';
 import { safePath, redact, equalSecret } from './security.js';
 import { dockerLogText } from './docker-stream.js';
+import { acceptanceWrites } from './acceptance-files.js';
 const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 const docker = new Docker();
 const token = process.env.RUNNER_TOKEN || '';
@@ -55,11 +53,16 @@ async function prepareCodexAuthMount() {
   finally { await container.remove({ force: true }).catch(() => undefined); }
 }
 async function readFile(runId: string, path: string) { const value = await exec(runId, ['sdlc-read-file', safePath(path)], 30); return value.exitCode === 0 ? value.stdout : ''; }
-async function gitSecret<T>(tokenValue: string | undefined, action: (binds: string[]) => Promise<T>) {
-  const value = tokenValue || process.env.GITHUB_TOKEN; if (!value) return action([]);
-  const directory = join(tmpdir(), `sdlc-git-${randomUUID()}`); await mkdir(directory); const file = join(directory, 'token'); await writeFile(file, value, { encoding: 'utf8', mode: 0o600 });
-  try { return await action([`${file}:/run/secrets/github_token:ro`]); } finally { await rm(directory, { recursive: true, force: true }); }
+// Credentials are passed through container env vars (consumed by an inline git
+// credential helper) because bind mounts from the runner container's /tmp are
+// resolved by the daemon against the host filesystem, not the runner's.
+function gitAuth(tokenValue: string | undefined) {
+  const value = tokenValue || process.env.GITHUB_TOKEN; if (!value) return { env: [] as string[], prefix: [] as string[] };
+  return { env: [`GIT_TOKEN=${value}`], prefix: ['-c', 'credential.helper=!f() { echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f'] };
 }
+// Prompts and acceptance sources travel through env vars into files inside named
+// volumes, never through host-path bind mounts.
+const promptScript = 'trap \'rm -f /workspace/.sdlc-prompt.txt\' EXIT; printf \'%s\' "$SDLCPROMPT" > /workspace/.sdlc-prompt.txt; codex exec - --json --sandbox danger-full-access --ignore-user-config --ignore-rules -C /workspace < /workspace/.sdlc-prompt.txt';
 app.get('/ready', async () => {
   const info = await docker.info(); const images = await docker.listImages({ filters: { reference: [workerImage] } });
   let codex = 'unavailable';
@@ -97,32 +100,58 @@ app.get('/auth/codex/:id', async req => {
 });
 app.post('/prepare', async req => {
   const body = z.object({ runId: runIdSchema, owner: z.string().regex(/^[\w.-]+$/), repo: z.string().regex(/^[\w.-]+$/), branch: z.string().min(1).max(200).refine(v => !v.startsWith('-') && !v.includes('..')), githubToken: z.string().min(1).optional() }).parse(req.body);
+  await docker.getVolume(volumeName(body.runId)).remove().catch(() => undefined);
   await docker.createVolume({ Name: volumeName(body.runId), Labels: { 'sdlc.run': body.runId } });
-  const clone = await gitSecret(body.githubToken, binds => execute(body.runId, ['git', '-c', 'credential.helper=/usr/local/bin/sdlc-git-credential', 'clone', '--branch', body.branch, '--single-branch', `https://github.com/${body.owner}/${body.repo}.git`, '.'], { timeout: 600, network: 'bridge', binds })); if (clone.exitCode) throw new Error(`Clone failed: ${clone.stderr}`);
-  const sha = await exec(body.runId, ['git', 'rev-parse', 'HEAD'], 30); return sha.stdout.trim();
+  const { env, prefix } = gitAuth(body.githubToken);
+  const clone = await execute(body.runId, ['git', ...prefix, 'clone', '--branch', body.branch, '--single-branch', `https://github.com/${body.owner}/${body.repo}.git`, '.'], { timeout: 600, network: 'bridge', env }); if (clone.exitCode) throw new Error(`Clone failed: ${clone.stderr}`);
+  const sha = await exec(body.runId, ['git', 'rev-parse', 'HEAD'], 30); return { sha: sha.stdout.trim() };
 });
 app.post('/agent', async req => {
   const body = z.object({ runId: runIdSchema, backend: backendSchema, prompt: z.string().max(300_000), timeoutSeconds: z.number().int().max(3600), phase: z.string() }).parse(req.body);
-  const promptPath = `.sdlc-prompt-${randomUUID()}.txt`; const temp = join(tmpdir(), `sdlc-${randomUUID()}`); await mkdir(temp); await writeFile(join(temp, 'prompt.txt'), body.prompt, { encoding: 'utf8', mode: 0o600 });
-  const binds = [`${join(temp, 'prompt.txt')}:/control/prompt.txt:ro`];
-  binds.push(`${codexAuthMount}:/home/worker/.codex:rw`);
-  const cmd = ['bash', '-lc', 'cat /control/prompt.txt | codex exec - --json --sandbox danger-full-access --ignore-user-config --ignore-rules -C /workspace'];
-  try { return await execute(body.runId, cmd, { timeout: body.timeoutSeconds, network: 'bridge', binds }); } finally { await rm(temp, { recursive: true, force: true }); void promptPath; }
+  return execute(body.runId, ['sh', '-lc', promptScript], { timeout: body.timeoutSeconds, network: 'bridge', env: [`SDLCPROMPT=${body.prompt}`], binds: [`${codexAuthMount}:/home/worker/.codex:rw`] });
+});
+app.post('/analyze', async req => {
+  const body = z.object({ owner: z.string().regex(/^[\w.-]+$/), repo: z.string().regex(/^[\w.-]+$/), branch: z.string().min(1).max(200).refine(v => !v.startsWith('-') && !v.includes('..')), prompt: z.string().max(300_000), githubToken: z.string().min(1).optional() }).parse(req.body);
+  const id = randomUUID();
+  await docker.createVolume({ Name: volumeName(id), Labels: { 'sdlc.analyze': 'true' } });
+  try {
+    const { env, prefix } = gitAuth(body.githubToken);
+    const clone = await execute(id, ['git', ...prefix, 'clone', '--depth', '1', '--branch', body.branch, '--single-branch', `https://github.com/${body.owner}/${body.repo}.git`, '.'], { timeout: 600, network: 'bridge', env });
+    if (clone.exitCode) throw new Error(`Clone failed: ${clone.stderr.slice(-500)}`);
+    return await execute(id, ['sh', '-lc', promptScript], { timeout: 420, network: 'bridge', env: [`SDLCPROMPT=${body.prompt}`], binds: [`${codexAuthMount}:/home/worker/.codex:rw`] });
+  } finally { await docker.getVolume(volumeName(id)).remove().catch(() => undefined); }
 });
 app.post('/command', async req => {
   const body = jobSchema.parse(req.body);
-  let acceptanceDirectory: string | undefined;
-  if (body.acceptanceFiles) { acceptanceDirectory = join(tmpdir(), `sdlc-acceptance-${randomUUID()}`); await mkdir(acceptanceDirectory, { recursive: true }); for (const file of body.acceptanceFiles) { const path = safePath(file.path); if (path.includes('/')) throw new Error('Acceptance files must use flat names'); await writeFile(join(acceptanceDirectory, path), file.content, { encoding: 'utf8', mode: 0o444 }); } }
-  const network = body.command.kind === 'setup' ? 'bridge' : 'none';
-  try { const result = await execute(body.runId, body.command.argv, { timeout: body.command.timeoutSeconds, network, binds: acceptanceDirectory ? [`${acceptanceDirectory}:/acceptance:ro`] : [] }); if (body.command.reportPath) result.files[body.command.reportPath] = await readFile(body.runId, body.command.reportPath) || result.stdout; return result; }
-  finally { if (acceptanceDirectory) await rm(acceptanceDirectory, { recursive: true, force: true }); }
+  let acceptanceVolume: string | undefined;
+  try {
+    if (body.acceptanceFiles) {
+      acceptanceVolume = `sdlc-accept-${randomUUID()}`;
+      await docker.createVolume({ Name: acceptanceVolume, Labels: { 'sdlc.run': body.runId } });
+      const chown = await docker.createContainer({ Image: workerImage, Cmd: ['sh', '-lc', 'chown -R 10001:10001 /acceptance'], User: '0:0',
+        HostConfig: { AutoRemove: false, NetworkMode: 'none', Binds: [`${acceptanceVolume}:/acceptance`] } });
+      try { await chown.start(); const status = await chown.wait(); if (status.StatusCode) throw new Error('Unable to prepare the acceptance volume'); }
+      finally { await chown.remove({ force: true }).catch(() => undefined); }
+      for (const file of body.acceptanceFiles) {
+        for (const stage of acceptanceWrites(file.path, file.content)) {
+          const write = await execute(body.runId, stage.argv, { timeout: 60, network: 'none', env: stage.env, binds: [`${acceptanceVolume}:/acceptance`] });
+          if (write.exitCode) throw new Error(`Unable to stage acceptance file ${file.path}`);
+        }
+      }
+    }
+    const network = body.command.kind === 'setup' ? 'bridge' : 'none';
+    const result = await execute(body.runId, body.command.argv, { timeout: body.command.timeoutSeconds, network, binds: acceptanceVolume ? [`${acceptanceVolume}:/acceptance:ro`] : [] });
+    if (body.command.reportPath) result.files[body.command.reportPath] = await readFile(body.runId, body.command.reportPath) || result.stdout;
+    return result;
+  }
+  finally { if (acceptanceVolume) await docker.getVolume(acceptanceVolume).remove().catch(() => undefined); }
 });
 app.post('/commit', async req => {
   const body = z.object({ runId: runIdSchema, message: z.string().min(1).max(200), baseSha: z.string().regex(/^[a-f0-9]{40}$/) }).parse(req.body);
   for (const command of [['git','config','user.name','SDLC Control Plane'], ['git','config','user.email','sdlc@localhost'], ['git','add','-A'], ['git','commit','--allow-empty','-m',body.message]]) { const result = await exec(body.runId, command, 120); if (result.exitCode) throw new Error(result.stderr); }
   const sha = (await exec(body.runId, ['git','rev-parse','HEAD'], 30)).stdout.trim(); const changed = (await exec(body.runId, ['git','diff','--name-only',body.baseSha,'HEAD'], 30)).stdout.trim().split(/\r?\n/).filter(Boolean); return { sha, changed };
 });
-app.post('/diff', async req => { const body = z.object({ runId: runIdSchema, baseSha: z.string().regex(/^[a-f0-9]{40}$/) }).parse(req.body); const result = await exec(body.runId, ['git','diff','--no-ext-diff',body.baseSha,'HEAD'], 120); if (result.exitCode) throw new Error(result.stderr); return result.stdout; });
-app.post('/push', async req => { const body = z.object({ runId: runIdSchema, branch: z.string().regex(/^[A-Za-z0-9._/-]+$/).refine(v => !v.startsWith('-') && !v.includes('..')), githubToken: z.string().min(1).optional() }).parse(req.body); const result = await gitSecret(body.githubToken, async binds => { const remote = await execute(body.runId, ['git','-c','credential.helper=/usr/local/bin/sdlc-git-credential','ls-remote','--heads','origin',`refs/heads/${body.branch}`], { timeout: 60, network: 'bridge', binds }); if (remote.exitCode) return remote; const expected = remote.stdout.trim().split(/\s+/)[0] || ''; return execute(body.runId, ['git','-c','credential.helper=/usr/local/bin/sdlc-git-credential','push','origin',`HEAD:refs/heads/${body.branch}`,`--force-with-lease=refs/heads/${body.branch}:${expected}`], { timeout: 180, network: 'bridge', binds }); }); if (result.exitCode) throw new Error(result.stderr); return { ok: true }; });
+app.post('/diff', async req => { const body = z.object({ runId: runIdSchema, baseSha: z.string().regex(/^[a-f0-9]{40}$/) }).parse(req.body); const result = await exec(body.runId, ['git','diff','--no-ext-diff',body.baseSha,'HEAD'], 120); if (result.exitCode) throw new Error(result.stderr); return { diff: result.stdout }; });
+app.post('/push', async req => { const body = z.object({ runId: runIdSchema, branch: z.string().regex(/^[A-Za-z0-9._/-]+$/).refine(v => !v.startsWith('-') && !v.includes('..')), githubToken: z.string().min(1).optional() }).parse(req.body); const { env, prefix } = gitAuth(body.githubToken); const remote = await execute(body.runId, ['git', ...prefix, 'ls-remote', '--heads', 'origin', `refs/heads/${body.branch}`], { timeout: 60, network: 'bridge', env }); if (remote.exitCode) throw new Error(remote.stderr); const expected = remote.stdout.trim().split(/\s+/)[0] || ''; const result = await execute(body.runId, ['git', ...prefix, 'push', 'origin', `HEAD:refs/heads/${body.branch}`, `--force-with-lease=refs/heads/${body.branch}:${expected}`], { timeout: 180, network: 'bridge', env }); if (result.exitCode) throw new Error(result.stderr); return { ok: true }; });
 app.post('/destroy', async req => { const { runId } = z.object({ runId: runIdSchema }).parse(req.body); for (const id of active.get(runId) || []) await docker.getContainer(id).kill().catch(() => undefined); active.delete(runId); await docker.getVolume(volumeName(runId)).remove().catch(() => undefined); return { ok: true }; });
 app.listen({ port: Number(process.env.RUNNER_PORT || 4311), host: process.env.RUNNER_HOST || '127.0.0.1' }).catch(error => { app.log.error(error); process.exit(1); });
