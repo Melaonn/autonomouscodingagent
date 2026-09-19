@@ -5,7 +5,11 @@ export function dockerLogText(value: Buffer | string) {
 
   while (offset + 8 <= buffer.length) {
     const stream = buffer[offset];
-    const framed = (stream === 1 || stream === 2) && buffer[offset + 1] === 0 && buffer[offset + 2] === 0 && buffer[offset + 3] === 0;
+    const framed =
+      (stream === 1 || stream === 2) &&
+      buffer[offset + 1] === 0 &&
+      buffer[offset + 2] === 0 &&
+      buffer[offset + 3] === 0;
     if (!framed) return buffer.toString('utf8');
     const length = buffer.readUInt32BE(offset + 4);
     const end = offset + 8 + length;

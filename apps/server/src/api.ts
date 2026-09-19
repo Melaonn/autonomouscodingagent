@@ -5,52 +5,214 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { repoAnalysisSchema, repositorySchema, type Document, type Integration, type Role, type Run, type User } from '../../../shared/types.js';
+import {
+  repoAnalysisSchema,
+  repositorySchema,
+  type Document,
+  type Integration,
+  type Role,
+  type Run,
+  type User,
+} from '../../../shared/types.js';
 import { config } from './config.js';
 import type { Store } from './store.js';
 import type { Engine } from './engine.js';
 import type { Runner } from './runner.js';
 import { hash, nonce, endpoint, equalSecret, sealSecret } from './security.js';
 import { profiles } from './profiles.js';
-import { availableRepositories, githubConfigured, oauthUrl, oauthUser, repositoryToken, setRepositoryToken, validateRepositoryToken } from './github.js';
+import {
+  availableRepositories,
+  githubConfigured,
+  oauthUrl,
+  oauthUser,
+  repositoryToken,
+  setRepositoryToken,
+  validateRepositoryToken,
+} from './github.js';
 import { approvalDigest, report } from './gates.js';
 import { jsonFrom, textFrom } from './agents.js';
 import { inspectIntegration } from './mcp.js';
-declare module 'fastify' { interface FastifyRequest { user?: User; sessionId?: string; csrf?: string } }
+declare module 'fastify' {
+  interface FastifyRequest {
+    user?: User;
+    sessionId?: string;
+    csrf?: string;
+  }
+}
 const error = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
 const roles: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
 export async function buildApi(store: Store, engine: Engine, runner: Runner) {
-  const app = Fastify({ logger: { redact: ['req.headers.authorization', 'req.headers.cookie', 'body.token', 'body.password'] }, bodyLimit: 2 * 1024 * 1024 });
-  await app.register(cookie, { secret: config.sessionSecret });
-  app.setErrorHandler((err, _req, reply) => { const failure = err as Error & { statusCode?: number }; const status = typeof failure.statusCode === 'number' ? failure.statusCode : err instanceof z.ZodError ? 400 : 500; reply.status(status).send({ error: status === 500 ? 'Internal request failure' : failure.message, details: err instanceof z.ZodError ? err.issues : undefined }); });
-  app.addHook('onRequest', async req => {
-    if (!req.url.startsWith('/api/')) return;
-    const sid = req.cookies.sdlc_session; if (sid) { const session = await store.session(sid); if (session) { req.user = session.user; req.sessionId = sid; req.csrf = session.csrf; } }
+  const app = Fastify({
+    logger: { redact: ['req.headers.authorization', 'req.headers.cookie', 'body.token', 'body.password'] },
+    bodyLimit: 2 * 1024 * 1024,
   });
-  app.addHook('preHandler', async req => {
+  await app.register(cookie, { secret: config.sessionSecret });
+  app.setErrorHandler((err, _req, reply) => {
+    const failure = err as Error & { statusCode?: number };
+    const status = typeof failure.statusCode === 'number' ? failure.statusCode : err instanceof z.ZodError ? 400 : 500;
+    reply.status(status).send({
+      error: status === 500 ? 'Internal request failure' : failure.message,
+      details: err instanceof z.ZodError ? err.issues : undefined,
+    });
+  });
+  app.addHook('onRequest', async (req) => {
+    if (!req.url.startsWith('/api/')) return;
+    const sid = req.cookies.sdlc_session;
+    if (sid) {
+      const session = await store.session(sid);
+      if (session) {
+        req.user = session.user;
+        req.sessionId = sid;
+        req.csrf = session.csrf;
+      }
+    }
+  });
+  app.addHook('preHandler', async (req) => {
     if (!req.url.startsWith('/api/') || req.method === 'GET' || req.method === 'HEAD') return;
     if (!req.user) throw error(401, 'Sign in required');
     if (req.headers['x-csrf-token'] !== req.csrf) throw error(403, 'CSRF token missing or invalid');
-    const origin = req.headers.origin; if (origin && origin !== config.publicUrl) throw error(403, 'Request origin rejected');
+    const origin = req.headers.origin;
+    if (origin && origin !== config.publicUrl) throw error(403, 'Request origin rejected');
   });
-  const requireRole = (req: FastifyRequest, role: Role) => { if (!req.user) throw error(401, 'Sign in required'); if (roles[req.user.role] < roles[role]) throw error(403, `${role} role required`); return req.user; };
-  const setSession = async (reply: FastifyReply, user: User) => { const id = nonce(); const csrf = nonce(); await store.setSession(id, user, csrf); reply.setCookie('sdlc_session', id, { httpOnly: true, secure: config.secureCookies, sameSite: 'lax', path: '/', maxAge: 43200 }); };
+  const requireRole = (req: FastifyRequest, role: Role) => {
+    if (!req.user) throw error(401, 'Sign in required');
+    if (roles[req.user.role] < roles[role]) throw error(403, `${role} role required`);
+    return req.user;
+  };
+  const setSession = async (reply: FastifyReply, user: User) => {
+    const id = nonce();
+    const csrf = nonce();
+    await store.setSession(id, user, csrf);
+    reply.setCookie('sdlc_session', id, {
+      httpOnly: true,
+      secure: config.secureCookies,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 43200,
+    });
+  };
   const loginAttempts = new Map<string, { count: number; resetAt: number }>();
-  app.get('/auth/github', async (_req, reply) => { const state = nonce(); reply.setCookie('oauth_state', state, { httpOnly: true, secure: config.production, sameSite: 'lax', path: '/auth', maxAge: 600 }); return reply.redirect(oauthUrl(state)); });
-  app.get('/auth/github/callback', async (req, reply) => { const query = z.object({ code: z.string(), state: z.string() }).parse(req.query); if (!req.cookies.oauth_state || !equalSecret(req.cookies.oauth_state, query.state)) throw error(400, 'OAuth state rejected'); const gh = await oauthUser(query.code); const allowed = (process.env.GITHUB_ALLOWED_USERS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean); if (!allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted'); const admins = (process.env.GITHUB_ADMIN_USERS || '').split(',').map(x => x.trim().toLowerCase()); await setSession(reply, { login: gh.login, role: admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator' }); reply.clearCookie('oauth_state', { path: '/auth' }); return reply.redirect(config.publicUrl); });
-  app.post('/auth/dev', async (req, reply) => { if (!config.devToken || !['127.0.0.1','::1'].includes(req.ip)) throw error(404, 'Development login unavailable'); const body = z.object({ token: z.string() }).parse(req.body); if (!equalSecret(body.token, config.devToken)) throw error(401, 'Token rejected'); await setSession(reply, { login: 'local-operator', role: 'admin' }); return { ok: true }; });
-  app.post('/auth/password', async (req, reply) => { const configured = config.adminPassword || config.devToken; if (!configured) throw error(404, 'Password login unavailable'); if (!config.adminPassword && !['127.0.0.1','::1'].includes(req.ip)) throw error(404, 'Password login unavailable'); const now = Date.now(); const attempts = loginAttempts.get(req.ip); if (attempts && attempts.resetAt > now && attempts.count >= 5) throw error(429, 'Too many login attempts; try again later'); const { password } = z.object({ password: z.string() }).parse(req.body); if (!equalSecret(password, configured)) { const current = attempts && attempts.resetAt > now ? attempts : { count: 0, resetAt: now + 15 * 60_000 }; current.count += 1; loginAttempts.set(req.ip, current); throw error(401, 'Password rejected'); } loginAttempts.delete(req.ip); await setSession(reply, { login: config.adminPassword ? 'administrator' : 'local-operator', role: 'admin' }); return { ok: true }; });
-  app.get('/api/me', async req => ({ user: req.user || null, csrf: req.csrf || '', githubOAuth: !!process.env.GITHUB_CLIENT_ID, passwordLogin: !!(config.adminPassword || config.devToken) }));
-  app.post('/api/logout', async (req, reply) => { if (req.sessionId) await store.deleteSession(req.sessionId); reply.clearCookie('sdlc_session', { path: '/' }); return { ok: true }; });
-  app.get('/api/readiness', async req => { requireRole(req, 'viewer'); let worker; try { worker = await runner.ready(); } catch (e) { worker = { ok: false, error: e instanceof Error ? e.message : String(e) }; } return { worker, github: githubConfigured(), database: true, deploymentRule: 'explicit approval required' }; });
-  app.get('/api/setup', async req => { requireRole(req, 'admin'); let codex = false; try { codex = (await runner.codexStatus()).connected; } catch { /* readiness explains runner failures */ } return { codex, github: githubConfigured(), repositories: (await store.repositories()).length }; });
-  app.post('/api/setup/codex', async req => { const actor = requireRole(req, 'admin'); const session = await runner.startCodexLogin(); await store.audit(actor.login, 'setup.codex.start', { id: session.id }); return session; });
-  app.get('/api/setup/codex/:id', async req => { requireRole(req, 'admin'); const { id } = z.object({ id: z.string().uuid() }).parse(req.params); return runner.codexLogin(id); });
-  app.post('/api/setup/github', async req => { const actor = requireRole(req, 'admin'); const { token } = z.object({ token: z.string().min(20).max(500) }).parse(req.body); const login = await validateRepositoryToken(token); await store.setSecret('github-token', sealSecret(token, config.sessionSecret)); setRepositoryToken(token); await store.audit(actor.login, 'setup.github.connect', { login }); return { connected: true, login }; });
-  app.get('/api/github/repositories', async req => { requireRole(req, 'admin'); if (!githubConfigured()) throw error(409, 'Connect GitHub first'); return availableRepositories(); });
-  app.post('/api/github/analyze', async req => {
+  app.get('/auth/github', async (_req, reply) => {
+    const state = nonce();
+    reply.setCookie('oauth_state', state, {
+      httpOnly: true,
+      secure: config.production,
+      sameSite: 'lax',
+      path: '/auth',
+      maxAge: 600,
+    });
+    return reply.redirect(oauthUrl(state));
+  });
+  app.get('/auth/github/callback', async (req, reply) => {
+    const query = z.object({ code: z.string(), state: z.string() }).parse(req.query);
+    if (!req.cookies.oauth_state || !equalSecret(req.cookies.oauth_state, query.state))
+      throw error(400, 'OAuth state rejected');
+    const gh = await oauthUser(query.code);
+    const allowed = (process.env.GITHUB_ALLOWED_USERS || '')
+      .split(',')
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean);
+    if (!allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted');
+    const admins = (process.env.GITHUB_ADMIN_USERS || '').split(',').map((x) => x.trim().toLowerCase());
+    await setSession(reply, { login: gh.login, role: admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator' });
+    reply.clearCookie('oauth_state', { path: '/auth' });
+    return reply.redirect(config.publicUrl);
+  });
+  app.post('/auth/dev', async (req, reply) => {
+    if (!config.devToken || !['127.0.0.1', '::1'].includes(req.ip)) throw error(404, 'Development login unavailable');
+    const body = z.object({ token: z.string() }).parse(req.body);
+    if (!equalSecret(body.token, config.devToken)) throw error(401, 'Token rejected');
+    await setSession(reply, { login: 'local-operator', role: 'admin' });
+    return { ok: true };
+  });
+  app.post('/auth/password', async (req, reply) => {
+    const configured = config.adminPassword || config.devToken;
+    if (!configured) throw error(404, 'Password login unavailable');
+    if (!config.adminPassword && !['127.0.0.1', '::1'].includes(req.ip)) throw error(404, 'Password login unavailable');
+    const now = Date.now();
+    const attempts = loginAttempts.get(req.ip);
+    if (attempts && attempts.resetAt > now && attempts.count >= 5)
+      throw error(429, 'Too many login attempts; try again later');
+    const { password } = z.object({ password: z.string() }).parse(req.body);
+    if (!equalSecret(password, configured)) {
+      const current = attempts && attempts.resetAt > now ? attempts : { count: 0, resetAt: now + 15 * 60_000 };
+      current.count += 1;
+      loginAttempts.set(req.ip, current);
+      throw error(401, 'Password rejected');
+    }
+    loginAttempts.delete(req.ip);
+    await setSession(reply, { login: config.adminPassword ? 'administrator' : 'local-operator', role: 'admin' });
+    return { ok: true };
+  });
+  app.get('/api/me', async (req) => ({
+    user: req.user || null,
+    csrf: req.csrf || '',
+    githubOAuth: !!process.env.GITHUB_CLIENT_ID,
+    passwordLogin: !!(config.adminPassword || config.devToken),
+  }));
+  app.post('/api/logout', async (req, reply) => {
+    if (req.sessionId) await store.deleteSession(req.sessionId);
+    reply.clearCookie('sdlc_session', { path: '/' });
+    return { ok: true };
+  });
+  app.get('/api/readiness', async (req) => {
+    requireRole(req, 'viewer');
+    let worker;
+    try {
+      worker = await runner.ready();
+    } catch (e) {
+      worker = { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    return { worker, github: githubConfigured(), database: true, deploymentRule: 'explicit approval required' };
+  });
+  app.get('/api/setup', async (req) => {
+    requireRole(req, 'admin');
+    let codex = false;
+    try {
+      codex = (await runner.codexStatus()).connected;
+    } catch {
+      /* readiness explains runner failures */
+    }
+    return { codex, github: githubConfigured(), repositories: (await store.repositories()).length };
+  });
+  app.post('/api/setup/codex', async (req) => {
     const actor = requireRole(req, 'admin');
-    const { owner, repo, branch } = z.object({ owner: z.string().regex(/^[\w.-]+$/), repo: z.string().regex(/^[\w.-]+$/), branch: z.string().min(1).max(200).refine(v => !v.startsWith('-') && !v.includes('..')) }).parse(req.body);
+    const session = await runner.startCodexLogin();
+    await store.audit(actor.login, 'setup.codex.start', { id: session.id });
+    return session;
+  });
+  app.get('/api/setup/codex/:id', async (req) => {
+    requireRole(req, 'admin');
+    const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+    return runner.codexLogin(id);
+  });
+  app.post('/api/setup/github', async (req) => {
+    const actor = requireRole(req, 'admin');
+    const { token } = z.object({ token: z.string().min(20).max(500) }).parse(req.body);
+    const login = await validateRepositoryToken(token);
+    await store.setSecret('github-token', sealSecret(token, config.sessionSecret));
+    setRepositoryToken(token);
+    await store.audit(actor.login, 'setup.github.connect', { login });
+    return { connected: true, login };
+  });
+  app.get('/api/github/repositories', async (req) => {
+    requireRole(req, 'admin');
+    if (!githubConfigured()) throw error(409, 'Connect GitHub first');
+    return availableRepositories();
+  });
+  app.post('/api/github/analyze', async (req) => {
+    const actor = requireRole(req, 'admin');
+    const { owner, repo, branch } = z
+      .object({
+        owner: z.string().regex(/^[\w.-]+$/),
+        repo: z.string().regex(/^[\w.-]+$/),
+        branch: z
+          .string()
+          .min(1)
+          .max(200)
+          .refine((v) => !v.startsWith('-') && !v.includes('..')),
+      })
+      .parse(req.body);
     if (!githubConfigured()) throw error(409, 'Connect GitHub first');
     const prompt = `You are onboarding a GitHub repository into a governed SDLC control plane. Inspect the repository and determine how it is built, tested, and deployed. Return only a valid JSON object with this exact shape: {"name":"string","stack":"typescript|python|custom","branch":"string","standards":"string","requiredCiChecks":["string"],"ciWaiver":"string","workflow":"string","rollbackWorkflow":"string","environment":"string","healthUrl":"string","rationale":"string"}
 Rules:
@@ -72,24 +234,243 @@ Do not invent values. Prefer empty/default values over guesses.`;
     await store.audit(actor.login, 'repository.analyze', { owner, repo, value });
     return value;
   });
-  app.get('/api/profiles', async req => { requireRole(req, 'admin'); return profiles; });
-  app.get('/api/repositories', async req => { requireRole(req, 'viewer'); return store.repositories(); });
-  app.post('/api/repositories', async req => { const actor = requireRole(req, 'admin'); const input = repositorySchema.parse(req.body); if (input.deployment.enabled) { endpoint(input.deployment.healthUrl, !config.production); if (!input.deployment.workflow || !input.deployment.rollbackWorkflow) throw error(400, 'Deployment and rollback workflows are required'); } if (!input.requiredCiChecks.length && !input.ciWaiver.trim()) throw error(400, 'Configure required CI checks or a documented CI waiver'); const existing = (await store.repositories()).find(r => r.owner === input.owner && r.repo === input.repo); const repository = { ...input, id: existing?.id || randomUUID(), version: (existing?.version || 0) + 1, createdAt: new Date().toISOString() }; await store.put('repository', repository); await store.audit(actor.login, existing ? 'repository.update' : 'repository.create', { id: repository.id, version: repository.version }); return repository; });
-  app.get('/api/documents', async req => { requireRole(req, 'viewer'); return (await store.documents()).map(({ content, ...d }) => ({ ...d, excerpt: content.slice(0, 300) })); });
-  app.post('/api/documents', async req => { const actor = requireRole(req, 'admin'); const body = z.object({ id: z.string().uuid().optional(), title: z.string().min(1).max(200), source: z.string().max(500), owner: z.string().min(1).max(120), content: z.string().min(1).max(2_000_000) }).parse(req.body); const existing = body.id ? await store.get<Document>('document', body.id) : undefined; const doc: Document = { ...body, id: existing?.id || randomUUID(), version: (existing?.version || 0) + 1, hash: hash(body.content), createdAt: new Date().toISOString() }; await store.put('document', doc); await store.audit(actor.login, 'document.save', { id: doc.id, version: doc.version, hash: doc.hash }); return { ...doc, content: undefined }; });
-  app.get('/api/integrations', async req => { requireRole(req, 'admin'); return store.integrations(); });
-  app.post('/api/integrations', async req => { const actor = requireRole(req, 'admin'); const body = z.object({ id: z.string().uuid().optional(), name: z.string().min(1), url: z.string().url(), allowedTools: z.array(z.string()), enabled: z.boolean(), headersEnv: z.record(z.string(), z.string()), contextCalls: z.array(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) })).default([]) }).parse(req.body); for (const call of body.contextCalls) if (!body.allowedTools.includes(call.tool)) throw error(400, `Context tool ${call.tool} is not allowlisted`); const integration: Integration = { ...body, id: body.id || randomUUID(), url: endpoint(body.url, !config.production) }; await store.put('integration', integration); const tools = integration.enabled ? await inspectIntegration(integration) : []; await store.audit(actor.login, 'integration.save', { id: integration.id, tools: tools.map(t => t.name) }); return { integration, tools }; });
-  app.get('/api/runs', async req => { requireRole(req, 'viewer'); return (await store.runs()).map(r => ({ ...r, policy: { ...r.policy, standards: '' } })); });
-  app.get('/api/runs/:id', async req => { requireRole(req, 'viewer'); const run = await store.getRun(z.object({ id: z.string().uuid() }).parse(req.params).id); if (!run) throw error(404, 'Run not found'); return { run, events: await store.events(run.id), artifacts: await store.artifacts(run.id) }; });
-  app.get('/api/runs/:id/events', async (req, reply) => { requireRole(req, 'viewer'); const id = z.object({ id: z.string().uuid() }).parse(req.params).id; const after = Number(req.headers['last-event-id'] || 0); reply.raw.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); let cursor = after; const send = async () => { for (const event of await store.events(id, cursor)) { cursor = event.id; reply.raw.write(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`); } }; await send(); const timer = setInterval(() => void send(), 2000); req.raw.on('close', () => clearInterval(timer)); return reply.hijack(); });
-  app.post('/api/runs', async req => { const actor = requireRole(req, 'operator'); const body = z.object({ repositoryId: z.string().uuid(), prompt: z.string().min(10).max(100000) }).parse(req.body); const repository = await store.get<Awaited<ReturnType<Store['repositories']>>[number]>('repository', body.repositoryId); if (!repository) throw error(404, 'Repository not found'); const at = new Date().toISOString(); const run: Run = { id: randomUUID(), ...body, backend: 'codex', reviewer: 'codex', status: 'queued', phase: 'planning', step: 'preflight', attempt: 0, createdAt: at, updatedAt: at, policy: structuredClone(repository), context: [], baseline: [], gates: [], limits: { repairs: 3, minutes: 90, agentMinutes: 20 }, usage: { inputTokens: 0, outputTokens: 0, costUsd: null }, repeatedFailures: 0 }; try { await store.insertRun(run); } catch { throw error(409, 'This repository already has an active run'); } await store.audit(actor.login, 'run.create', { id: run.id, repositoryId: run.repositoryId }); engine.wake(); return run; });
-  app.post('/api/runs/:id/answer', async req => { const actor = requireRole(req, 'operator'); const id = z.object({ id: z.string().uuid() }).parse(req.params).id; const body = z.object({ answer: z.string().min(1).max(10000) }).parse(req.body); const run = await store.getRun(id); if (!run || run.status !== 'needs_input') throw error(409, 'Run is not awaiting input'); run.answer = body.answer; if (run.contract) { run.contract.assumptions.push(`Stakeholder answer: ${body.answer}`); run.contract.clarification = null; } run.status = 'running'; run.phase = 'design'; run.step = 'blueprint'; run.question = undefined; await store.saveRun(run); await store.audit(actor.login, 'run.answer', { id }); engine.wake(); return run; });
-  app.post('/api/runs/:id/approval', async req => { const actor = requireRole(req, 'operator'); const id = z.object({ id: z.string().uuid() }).parse(req.params).id; const body = z.object({ approved: z.boolean(), digest: z.string() }).parse(req.body); const run = await store.getRun(id); if (!run || run.status !== 'awaiting_approval' || run.step !== 'approval' || !run.approval) throw error(409, 'Run is not awaiting deployment approval'); if (body.digest !== run.approval.digest || body.digest !== approvalDigest(run)) throw error(409, 'Candidate changed; reload approval details'); run.approval = { digest: body.digest, approvedBy: body.approved ? actor.login : undefined, approvedAt: new Date().toISOString(), rejected: !body.approved }; if (body.approved) { run.status = 'running'; } else { run.status = 'blocked'; run.blocker = `Deployment rejected by ${actor.login}`; } await store.saveRun(run); await store.audit(actor.login, body.approved ? 'deployment.approve' : 'deployment.reject', { id, digest: body.digest, environment: run.policy.deployment.environment, sha: run.candidateSha }); engine.wake(); return run; });
-  app.post('/api/runs/:id/cancel', async req => { const actor = requireRole(req, 'operator'); const id = z.object({ id: z.string().uuid() }).parse(req.params).id; const run = await store.getRun(id); if (!run || ['monitoring','succeeded','failed','cancelled'].includes(run.status)) throw error(409, 'Run cannot be cancelled'); run.status = 'cancelled'; run.blocker = `Cancelled by ${actor.login}`; await store.revoke(id); await store.saveRun(run); await runner.destroy(id).catch(() => undefined); await store.audit(actor.login, 'run.cancel', { id }); return run; });
-  app.post('/api/runs/:id/resume', async req => { const actor = requireRole(req, 'operator'); const id = z.object({ id: z.string().uuid() }).parse(req.params).id; const run = await store.getRun(id); if (!run || !['blocked','failed'].includes(run.status)) throw error(409, 'Run is not resumable'); run.status = run.phase === 'coding' ? 'repairing' : 'running'; run.blocker = undefined; await store.saveRun(run); await store.audit(actor.login, 'run.resume', { id }); engine.wake(); return run; });
-  app.get('/api/runs/:id/report', async (req, reply) => { requireRole(req, 'viewer'); const id = z.object({ id: z.string().uuid() }).parse(req.params).id; const run = await store.getRun(id); if (!run) throw error(404, 'Run not found'); reply.type('text/markdown').header('content-disposition', `attachment; filename="sdlc-${id}.md"`); return report(run); });
-  app.get('/api/artifacts/:id', async (req, reply) => { requireRole(req, 'viewer'); const id = z.object({ id: z.string().uuid() }).parse(req.params).id; const artifact = await store.get<{ name: string; content: string }>('artifact', id); if (!artifact) throw error(404, 'Artifact not found'); reply.type(artifact.name.endsWith('.json') ? 'application/json' : 'text/plain').header('content-disposition', `attachment; filename="${artifact.name.replace(/[^\w.-]/g, '_')}"`); return artifact.content; });
-  app.get('/api/audit', async req => { requireRole(req, 'admin'); return store.audits(); });
-  const webRoot = resolve('apps/web/dist'); if (existsSync(webRoot)) { await app.register(staticPlugin, { root: webRoot, wildcard: false }); app.get('/*', (_req, reply) => reply.sendFile('index.html')); }
+  app.get('/api/profiles', async (req) => {
+    requireRole(req, 'admin');
+    return profiles;
+  });
+  app.get('/api/repositories', async (req) => {
+    requireRole(req, 'viewer');
+    return store.repositories();
+  });
+  app.post('/api/repositories', async (req) => {
+    const actor = requireRole(req, 'admin');
+    const input = repositorySchema.parse(req.body);
+    if (input.deployment.enabled) {
+      endpoint(input.deployment.healthUrl, !config.production);
+      if (!input.deployment.workflow || !input.deployment.rollbackWorkflow)
+        throw error(400, 'Deployment and rollback workflows are required');
+    }
+    if (!input.requiredCiChecks.length && !input.ciWaiver.trim())
+      throw error(400, 'Configure required CI checks or a documented CI waiver');
+    const existing = (await store.repositories()).find((r) => r.owner === input.owner && r.repo === input.repo);
+    const repository = {
+      ...input,
+      id: existing?.id || randomUUID(),
+      version: (existing?.version || 0) + 1,
+      createdAt: new Date().toISOString(),
+    };
+    await store.put('repository', repository);
+    await store.audit(actor.login, existing ? 'repository.update' : 'repository.create', {
+      id: repository.id,
+      version: repository.version,
+    });
+    return repository;
+  });
+  app.get('/api/documents', async (req) => {
+    requireRole(req, 'viewer');
+    return (await store.documents()).map(({ content, ...d }) => ({ ...d, excerpt: content.slice(0, 300) }));
+  });
+  app.post('/api/documents', async (req) => {
+    const actor = requireRole(req, 'admin');
+    const body = z
+      .object({
+        id: z.string().uuid().optional(),
+        title: z.string().min(1).max(200),
+        source: z.string().max(500),
+        owner: z.string().min(1).max(120),
+        content: z.string().min(1).max(2_000_000),
+      })
+      .parse(req.body);
+    const existing = body.id ? await store.get<Document>('document', body.id) : undefined;
+    const doc: Document = {
+      ...body,
+      id: existing?.id || randomUUID(),
+      version: (existing?.version || 0) + 1,
+      hash: hash(body.content),
+      createdAt: new Date().toISOString(),
+    };
+    await store.put('document', doc);
+    await store.audit(actor.login, 'document.save', { id: doc.id, version: doc.version, hash: doc.hash });
+    return { ...doc, content: undefined };
+  });
+  app.get('/api/integrations', async (req) => {
+    requireRole(req, 'admin');
+    return store.integrations();
+  });
+  app.post('/api/integrations', async (req) => {
+    const actor = requireRole(req, 'admin');
+    const body = z
+      .object({
+        id: z.string().uuid().optional(),
+        name: z.string().min(1),
+        url: z.string().url(),
+        allowedTools: z.array(z.string()),
+        enabled: z.boolean(),
+        headersEnv: z.record(z.string(), z.string()),
+        contextCalls: z.array(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) })).default([]),
+      })
+      .parse(req.body);
+    for (const call of body.contextCalls)
+      if (!body.allowedTools.includes(call.tool)) throw error(400, `Context tool ${call.tool} is not allowlisted`);
+    const integration: Integration = {
+      ...body,
+      id: body.id || randomUUID(),
+      url: endpoint(body.url, !config.production),
+    };
+    await store.put('integration', integration);
+    const tools = integration.enabled ? await inspectIntegration(integration) : [];
+    await store.audit(actor.login, 'integration.save', { id: integration.id, tools: tools.map((t) => t.name) });
+    return { integration, tools };
+  });
+  app.get('/api/runs', async (req) => {
+    requireRole(req, 'viewer');
+    return (await store.runs()).map((r) => ({ ...r, policy: { ...r.policy, standards: '' } }));
+  });
+  app.get('/api/runs/:id', async (req) => {
+    requireRole(req, 'viewer');
+    const run = await store.getRun(z.object({ id: z.string().uuid() }).parse(req.params).id);
+    if (!run) throw error(404, 'Run not found');
+    return { run, events: await store.events(run.id), artifacts: await store.artifacts(run.id) };
+  });
+  app.post('/api/runs', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const body = z.object({ repositoryId: z.string().uuid(), prompt: z.string().min(10).max(100000) }).parse(req.body);
+    const repository = await store.get<Awaited<ReturnType<Store['repositories']>>[number]>(
+      'repository',
+      body.repositoryId,
+    );
+    if (!repository) throw error(404, 'Repository not found');
+    const at = new Date().toISOString();
+    const run: Run = {
+      id: randomUUID(),
+      ...body,
+      backend: 'codex',
+      reviewer: 'codex',
+      status: 'queued',
+      phase: 'planning',
+      step: 'preflight',
+      attempt: 0,
+      createdAt: at,
+      updatedAt: at,
+      policy: structuredClone(repository),
+      context: [],
+      baseline: [],
+      gates: [],
+      limits: { repairs: 3, minutes: 90, agentMinutes: 20 },
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: null },
+      repeatedFailures: 0,
+    };
+    try {
+      await store.insertRun(run);
+    } catch {
+      throw error(409, 'This repository already has an active run');
+    }
+    await store.audit(actor.login, 'run.create', { id: run.id, repositoryId: run.repositoryId });
+    engine.wake();
+    return run;
+  });
+  app.post('/api/runs/:id/answer', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const body = z.object({ answer: z.string().min(1).max(10000) }).parse(req.body);
+    const run = await store.getRun(id);
+    if (!run || run.status !== 'needs_input') throw error(409, 'Run is not awaiting input');
+    run.answer = body.answer;
+    if (run.contract) {
+      run.contract.assumptions.push(`Stakeholder answer: ${body.answer}`);
+      run.contract.clarification = null;
+    }
+    run.status = 'running';
+    run.phase = 'design';
+    run.step = 'blueprint';
+    run.question = undefined;
+    await store.saveRun(run);
+    await store.audit(actor.login, 'run.answer', { id });
+    engine.wake();
+    return run;
+  });
+  app.post('/api/runs/:id/approval', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const body = z.object({ approved: z.boolean(), digest: z.string() }).parse(req.body);
+    const run = await store.getRun(id);
+    if (!run || run.status !== 'awaiting_approval' || run.step !== 'approval' || !run.approval)
+      throw error(409, 'Run is not awaiting deployment approval');
+    if (body.digest !== run.approval.digest || body.digest !== approvalDigest(run))
+      throw error(409, 'Candidate changed; reload approval details');
+    run.approval = {
+      digest: body.digest,
+      approvedBy: body.approved ? actor.login : undefined,
+      approvedAt: new Date().toISOString(),
+      rejected: !body.approved,
+    };
+    if (body.approved) {
+      run.status = 'running';
+    } else {
+      run.status = 'blocked';
+      run.blocker = `Deployment rejected by ${actor.login}`;
+    }
+    await store.saveRun(run);
+    await store.audit(actor.login, body.approved ? 'deployment.approve' : 'deployment.reject', {
+      id,
+      digest: body.digest,
+      environment: run.policy.deployment.environment,
+      sha: run.candidateSha,
+    });
+    engine.wake();
+    return run;
+  });
+  app.post('/api/runs/:id/cancel', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const run = await store.getRun(id);
+    if (!run || ['monitoring', 'failed', 'cancelled'].includes(run.status)) throw error(409, 'Run cannot be cancelled');
+    run.status = 'cancelled';
+    run.blocker = `Cancelled by ${actor.login}`;
+    await store.revoke(id);
+    await store.saveRun(run);
+    await runner.destroy(id).catch(() => undefined);
+    await store.audit(actor.login, 'run.cancel', { id });
+    return run;
+  });
+  app.post('/api/runs/:id/resume', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const run = await store.getRun(id);
+    if (!run || !['blocked', 'failed'].includes(run.status)) throw error(409, 'Run is not resumable');
+    run.status = run.phase === 'coding' ? 'repairing' : 'running';
+    run.blocker = undefined;
+    await store.saveRun(run);
+    await store.audit(actor.login, 'run.resume', { id });
+    engine.wake();
+    return run;
+  });
+  app.get('/api/runs/:id/report', async (req, reply) => {
+    requireRole(req, 'viewer');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const run = await store.getRun(id);
+    if (!run) throw error(404, 'Run not found');
+    reply.type('text/markdown').header('content-disposition', `attachment; filename="sdlc-${id}.md"`);
+    return report(run);
+  });
+  app.get('/api/artifacts/:id', async (req, reply) => {
+    requireRole(req, 'viewer');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    const artifact = await store.get<{ name: string; content: string }>('artifact', id);
+    if (!artifact) throw error(404, 'Artifact not found');
+    reply
+      .type(artifact.name.endsWith('.json') ? 'application/json' : 'text/plain')
+      .header('content-disposition', `attachment; filename="${artifact.name.replace(/[^\w.-]/g, '_')}"`);
+    return artifact.content;
+  });
+  app.get('/api/audit', async (req) => {
+    requireRole(req, 'admin');
+    return store.audits();
+  });
+  const webRoot = resolve('apps/web/dist');
+  if (existsSync(webRoot)) {
+    await app.register(staticPlugin, { root: webRoot, wildcard: false });
+    app.get('/*', (_req, reply) => reply.sendFile('index.html'));
+  }
   return app;
 }

@@ -14,144 +14,466 @@ const workerImage = process.env.WORKER_IMAGE || 'sdlc-worker:local';
 const codexAuthMount = process.env.CODEX_AUTH_DIR || 'sdlc-codex-auth';
 const active = new Map<string, Set<string>>();
 const ansiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g');
-type LoginSession = { id: string; containerId: string; status: 'starting' | 'waiting' | 'connected' | 'failed'; loginUrl?: string; code?: string; error?: string };
+type LoginSession = {
+  id: string;
+  containerId: string;
+  status: 'starting' | 'waiting' | 'connected' | 'failed';
+  loginUrl?: string;
+  code?: string;
+  error?: string;
+};
 const loginSessions = new Map<string, LoginSession>();
 const volumeName = (runId: string) => `sdlc-run-${runId.replace(/[^a-zA-Z0-9_.-]/g, '')}`;
-app.addHook('onRequest', async req => { const auth = req.headers.authorization?.slice(7) || ''; if (!token || !equalSecret(auth, token)) throw Object.assign(new Error('Unauthorized'), { statusCode: 401 }); });
+app.addHook('onRequest', async (req) => {
+  const auth = req.headers.authorization?.slice(7) || '';
+  if (!token || !equalSecret(auth, token)) throw Object.assign(new Error('Unauthorized'), { statusCode: 401 });
+});
 const runIdSchema = z.string().uuid();
-const jobSchema = z.object({ runId: runIdSchema, command: commandSchema, acceptanceFiles: z.array(z.object({ path: z.string(), content: z.string().max(2_000_000) })).optional() });
-async function execute(runId: string, cmd: string[], options: { env?: string[]; timeout?: number; network?: string; binds?: string[] } = {}) {
+const jobSchema = z.object({
+  runId: runIdSchema,
+  command: commandSchema,
+  acceptanceFiles: z.array(z.object({ path: z.string(), content: z.string().max(2_000_000) })).optional(),
+});
+async function execute(
+  runId: string,
+  cmd: string[],
+  options: { env?: string[]; timeout?: number; network?: string; binds?: string[] } = {},
+) {
   const started = Date.now();
-  const container = await docker.createContainer({ Image: workerImage, Cmd: cmd, WorkingDir: '/workspace', Env: options.env || [], User: '10001:10001',
-    HostConfig: { AutoRemove: false, NetworkMode: options.network || 'none', ReadonlyRootfs: true,
-      CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'], PidsLimit: 512, Memory: 3 * 1024 ** 3, NanoCpus: 2_000_000_000,
-      Binds: [`${volumeName(runId)}:/workspace`, ...(options.binds || [])], Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=512m', '/home/worker/.cache': 'rw,nosuid,size=512m' } } });
-  const set = active.get(runId) || new Set<string>(); set.add(container.id); active.set(runId, set);
+  const container = await docker.createContainer({
+    Image: workerImage,
+    Cmd: cmd,
+    WorkingDir: '/workspace',
+    Env: options.env || [],
+    User: '10001:10001',
+    HostConfig: {
+      AutoRemove: false,
+      NetworkMode: options.network || 'none',
+      ReadonlyRootfs: true,
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges'],
+      PidsLimit: 512,
+      Memory: 3 * 1024 ** 3,
+      NanoCpus: 2_000_000_000,
+      Binds: [`${volumeName(runId)}:/workspace`, ...(options.binds || [])],
+      Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=512m', '/home/worker/.cache': 'rw,nosuid,size=512m' },
+    },
+  });
+  const set = active.get(runId) || new Set<string>();
+  set.add(container.id);
+  active.set(runId, set);
   let timedOut = false;
   try {
     await container.start();
     const waitPromise = container.wait();
-    const deadline = setTimeout(() => { timedOut = true; void container.kill().catch(() => undefined); }, (options.timeout || 600) * 1000);
-    const status = await waitPromise; clearTimeout(deadline);
+    const deadline = setTimeout(
+      () => {
+        timedOut = true;
+        void container.kill().catch(() => undefined);
+      },
+      (options.timeout || 600) * 1000,
+    );
+    const status = await waitPromise;
+    clearTimeout(deadline);
     const stdout = dockerLogText(await container.logs({ stdout: true, stderr: false }));
     const stderr = dockerLogText(await container.logs({ stdout: false, stderr: true }));
-    return { exitCode: timedOut ? 124 : status.StatusCode, stdout: redact(stdout), stderr: redact(stderr), durationMs: Date.now() - started, files: {} as Record<string, string> };
-  } finally { set.delete(container.id); await container.remove({ force: true }).catch(() => undefined); }
+    return {
+      exitCode: timedOut ? 124 : status.StatusCode,
+      stdout: redact(stdout),
+      stderr: redact(stderr),
+      durationMs: Date.now() - started,
+      files: {} as Record<string, string>,
+    };
+  } finally {
+    set.delete(container.id);
+    await container.remove({ force: true }).catch(() => undefined);
+  }
 }
-async function exec(runId: string, cmd: string[], timeout = 600, network = 'none') { return execute(runId, cmd, { timeout, network }); }
+async function exec(runId: string, cmd: string[], timeout = 600, network = 'none') {
+  return execute(runId, cmd, { timeout, network });
+}
 async function codexAuthCommand(cmd: string[], network = 'none') {
-  const container = await docker.createContainer({ Image: workerImage, Cmd: cmd, User: '10001:10001',
-    HostConfig: { AutoRemove: false, NetworkMode: network, ReadonlyRootfs: true, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'],
-      Binds: [`${codexAuthMount}:/home/worker/.codex:rw`], Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=64m', '/home/worker/.cache': 'rw,nosuid,size=64m' } } });
-  try { await container.start(); const status = await container.wait(); const stdout = dockerLogText(await container.logs({ stdout: true, stderr: false })); const stderr = dockerLogText(await container.logs({ stdout: false, stderr: true })); return { exitCode: status.StatusCode, stdout, stderr }; }
-  finally { await container.remove({ force: true }).catch(() => undefined); }
+  const container = await docker.createContainer({
+    Image: workerImage,
+    Cmd: cmd,
+    User: '10001:10001',
+    HostConfig: {
+      AutoRemove: false,
+      NetworkMode: network,
+      ReadonlyRootfs: true,
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges'],
+      Binds: [`${codexAuthMount}:/home/worker/.codex:rw`],
+      Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=64m', '/home/worker/.cache': 'rw,nosuid,size=64m' },
+    },
+  });
+  try {
+    await container.start();
+    const status = await container.wait();
+    const stdout = dockerLogText(await container.logs({ stdout: true, stderr: false }));
+    const stderr = dockerLogText(await container.logs({ stdout: false, stderr: true }));
+    return { exitCode: status.StatusCode, stdout, stderr };
+  } finally {
+    await container.remove({ force: true }).catch(() => undefined);
+  }
 }
 async function prepareCodexAuthMount() {
-  const container = await docker.createContainer({ Image: workerImage, Cmd: ['sh', '-lc', 'mkdir -p /home/worker/.codex && chown -R 10001:10001 /home/worker/.codex'], User: '0:0',
-    HostConfig: { AutoRemove: false, NetworkMode: 'none', Binds: [`${codexAuthMount}:/home/worker/.codex:rw`] } });
-  try { await container.start(); const status = await container.wait(); if (status.StatusCode) throw new Error('Unable to prepare the Codex credential volume'); }
-  finally { await container.remove({ force: true }).catch(() => undefined); }
+  const container = await docker.createContainer({
+    Image: workerImage,
+    Cmd: ['sh', '-lc', 'mkdir -p /home/worker/.codex && chown -R 10001:10001 /home/worker/.codex'],
+    User: '0:0',
+    HostConfig: { AutoRemove: false, NetworkMode: 'none', Binds: [`${codexAuthMount}:/home/worker/.codex:rw`] },
+  });
+  try {
+    await container.start();
+    const status = await container.wait();
+    if (status.StatusCode) throw new Error('Unable to prepare the Codex credential volume');
+  } finally {
+    await container.remove({ force: true }).catch(() => undefined);
+  }
 }
-async function readFile(runId: string, path: string) { const value = await exec(runId, ['sdlc-read-file', safePath(path)], 30); return value.exitCode === 0 ? value.stdout : ''; }
+async function readFile(runId: string, path: string) {
+  const value = await exec(runId, ['sdlc-read-file', safePath(path)], 30);
+  return value.exitCode === 0 ? value.stdout : '';
+}
 // Credentials are passed through container env vars (consumed by an inline git
 // credential helper) because bind mounts from the runner container's /tmp are
 // resolved by the daemon against the host filesystem, not the runner's.
 function gitAuth(tokenValue: string | undefined) {
-  const value = tokenValue || process.env.GITHUB_TOKEN; if (!value) return { env: [] as string[], prefix: [] as string[] };
-  return { env: [`GIT_TOKEN=${value}`], prefix: ['-c', 'credential.helper=!f() { echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f'] };
+  const value = tokenValue || process.env.GITHUB_TOKEN;
+  if (!value) return { env: [] as string[], prefix: [] as string[] };
+  return {
+    env: [`GIT_TOKEN=${value}`],
+    prefix: ['-c', 'credential.helper=!f() { echo username=x-access-token; echo "password=$GIT_TOKEN"; }; f'],
+  };
 }
 // Prompts and acceptance sources travel through env vars into files inside named
 // volumes, never through host-path bind mounts.
-const promptScript = 'trap \'rm -f /workspace/.sdlc-prompt.txt\' EXIT; printf \'%s\' "$SDLCPROMPT" > /workspace/.sdlc-prompt.txt; codex exec - --json --sandbox danger-full-access --ignore-user-config --ignore-rules -C /workspace < /workspace/.sdlc-prompt.txt';
+const promptScript =
+  "trap 'rm -f /workspace/.sdlc-prompt.txt' EXIT; printf '%s' \"$SDLCPROMPT\" > /workspace/.sdlc-prompt.txt; codex exec - --json --sandbox danger-full-access --ignore-user-config --ignore-rules -C /workspace < /workspace/.sdlc-prompt.txt";
 app.get('/ready', async () => {
-  const info = await docker.info(); const images = await docker.listImages({ filters: { reference: [workerImage] } });
+  const info = await docker.info();
+  const images = await docker.listImages({ filters: { reference: [workerImage] } });
   let codex = 'unavailable';
-  if (images.length) { const probeId = randomUUID(); await docker.createVolume({ Name: volumeName(probeId) });
-    codex = (await exec(probeId, ['codex', '--version'], 30)).stdout.trim() || 'unavailable'; await docker.getVolume(volumeName(probeId)).remove().catch(() => undefined); }
-  return { ok: images.length > 0 && codex !== 'unavailable', docker: info.ServerVersion, image: images.length > 0, agents: { codex } };
+  if (images.length) {
+    const probeId = randomUUID();
+    await docker.createVolume({ Name: volumeName(probeId) });
+    codex = (await exec(probeId, ['codex', '--version'], 30)).stdout.trim() || 'unavailable';
+    await docker
+      .getVolume(volumeName(probeId))
+      .remove()
+      .catch(() => undefined);
+  }
+  return {
+    ok: images.length > 0 && codex !== 'unavailable',
+    docker: info.ServerVersion,
+    image: images.length > 0,
+    agents: { codex },
+  };
 });
 app.get('/auth/codex/status', async () => {
-  await prepareCodexAuthMount(); const result = await codexAuthCommand(['codex', 'login', 'status']);
+  await prepareCodexAuthMount();
+  const result = await codexAuthCommand(['codex', 'login', 'status']);
   return { connected: result.exitCode === 0 };
 });
 app.post('/auth/codex/start', async () => {
   await prepareCodexAuthMount();
-  for (const session of loginSessions.values()) if (session.status === 'starting' || session.status === 'waiting') await docker.getContainer(session.containerId).remove({ force: true }).catch(() => undefined);
-  for (const orphan of await docker.listContainers({ all: true, filters: { label: ['sdlc.role=codex-login'] } })) await docker.getContainer(orphan.Id).remove({ force: true }).catch(() => undefined);
+  for (const session of loginSessions.values())
+    if (session.status === 'starting' || session.status === 'waiting')
+      await docker
+        .getContainer(session.containerId)
+        .remove({ force: true })
+        .catch(() => undefined);
+  for (const orphan of await docker.listContainers({ all: true, filters: { label: ['sdlc.role=codex-login'] } }))
+    await docker
+      .getContainer(orphan.Id)
+      .remove({ force: true })
+      .catch(() => undefined);
   const id = randomUUID();
-  const container = await docker.createContainer({ Image: workerImage, Cmd: ['codex', 'login', '--device-auth'], User: '10001:10001', Labels: { 'sdlc.role': 'codex-login' },
-    HostConfig: { AutoRemove: false, NetworkMode: 'bridge', ReadonlyRootfs: true, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'],
-      Binds: [`${codexAuthMount}:/home/worker/.codex:rw`], Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=64m', '/home/worker/.cache': 'rw,nosuid,size=64m' } } });
-  const session: LoginSession = { id, containerId: container.id, status: 'starting' }; loginSessions.set(id, session); await container.start();
-  void container.wait().then(async result => {
-    const logs = dockerLogText(await container.logs({ stdout: true, stderr: true }).catch(() => Buffer.from('')));
-    session.status = result.StatusCode === 0 ? 'connected' : 'failed'; if (result.StatusCode) session.error = logs.slice(-500) || 'Codex login was not completed';
-    await container.remove({ force: true }).catch(() => undefined);
-  }).catch(error => { session.status = 'failed'; session.error = error instanceof Error ? error.message : String(error); });
+  const container = await docker.createContainer({
+    Image: workerImage,
+    Cmd: ['codex', 'login', '--device-auth'],
+    User: '10001:10001',
+    Labels: { 'sdlc.role': 'codex-login' },
+    HostConfig: {
+      AutoRemove: false,
+      NetworkMode: 'bridge',
+      ReadonlyRootfs: true,
+      CapDrop: ['ALL'],
+      SecurityOpt: ['no-new-privileges'],
+      Binds: [`${codexAuthMount}:/home/worker/.codex:rw`],
+      Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=64m', '/home/worker/.cache': 'rw,nosuid,size=64m' },
+    },
+  });
+  const session: LoginSession = { id, containerId: container.id, status: 'starting' };
+  loginSessions.set(id, session);
+  await container.start();
+  void container
+    .wait()
+    .then(async (result) => {
+      const logs = dockerLogText(await container.logs({ stdout: true, stderr: true }).catch(() => Buffer.from('')));
+      session.status = result.StatusCode === 0 ? 'connected' : 'failed';
+      if (result.StatusCode) session.error = logs.slice(-500) || 'Codex login was not completed';
+      await container.remove({ force: true }).catch(() => undefined);
+    })
+    .catch((error) => {
+      session.status = 'failed';
+      session.error = error instanceof Error ? error.message : String(error);
+    });
   return { id };
 });
-app.get('/auth/codex/:id', async req => {
-  const { id } = z.object({ id: z.string().uuid() }).parse(req.params); const session = loginSessions.get(id); if (!session) throw Object.assign(new Error('Login session not found'), { statusCode: 404 });
+app.get('/auth/codex/:id', async (req) => {
+  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+  const session = loginSessions.get(id);
+  if (!session) throw Object.assign(new Error('Login session not found'), { statusCode: 404 });
   if (session.status === 'starting' || session.status === 'waiting') {
-    const logs = dockerLogText(await docker.getContainer(session.containerId).logs({ stdout: true, stderr: true }).catch(() => Buffer.from(''))).replace(ansiPattern, '');
-    session.loginUrl = logs.match(/https:\/\/auth\.openai\.com\/codex\/device/)?.[0]; session.code = logs.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/)?.[0]; session.status = session.code ? 'waiting' : 'starting';
+    const logs = dockerLogText(
+      await docker
+        .getContainer(session.containerId)
+        .logs({ stdout: true, stderr: true })
+        .catch(() => Buffer.from('')),
+    ).replace(ansiPattern, '');
+    session.loginUrl = logs.match(/https:\/\/auth\.openai\.com\/codex\/device/)?.[0];
+    session.code = logs.match(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/)?.[0];
+    session.status = session.code ? 'waiting' : 'starting';
   }
-  return { id: session.id, status: session.status, loginUrl: session.loginUrl, code: session.code, error: session.error };
+  return {
+    id: session.id,
+    status: session.status,
+    loginUrl: session.loginUrl,
+    code: session.code,
+    error: session.error,
+  };
 });
-app.post('/prepare', async req => {
-  const body = z.object({ runId: runIdSchema, owner: z.string().regex(/^[\w.-]+$/), repo: z.string().regex(/^[\w.-]+$/), branch: z.string().min(1).max(200).refine(v => !v.startsWith('-') && !v.includes('..')), githubToken: z.string().min(1).optional() }).parse(req.body);
-  await docker.getVolume(volumeName(body.runId)).remove().catch(() => undefined);
+app.post('/prepare', async (req) => {
+  const body = z
+    .object({
+      runId: runIdSchema,
+      owner: z.string().regex(/^[\w.-]+$/),
+      repo: z.string().regex(/^[\w.-]+$/),
+      branch: z
+        .string()
+        .min(1)
+        .max(200)
+        .refine((v) => !v.startsWith('-') && !v.includes('..')),
+      githubToken: z.string().min(1).optional(),
+    })
+    .parse(req.body);
+  await docker
+    .getVolume(volumeName(body.runId))
+    .remove()
+    .catch(() => undefined);
   await docker.createVolume({ Name: volumeName(body.runId), Labels: { 'sdlc.run': body.runId } });
   const { env, prefix } = gitAuth(body.githubToken);
-  const clone = await execute(body.runId, ['git', ...prefix, 'clone', '--branch', body.branch, '--single-branch', `https://github.com/${body.owner}/${body.repo}.git`, '.'], { timeout: 600, network: 'bridge', env }); if (clone.exitCode) throw new Error(`Clone failed: ${clone.stderr}`);
-  const sha = await exec(body.runId, ['git', 'rev-parse', 'HEAD'], 30); return { sha: sha.stdout.trim() };
+  const clone = await execute(
+    body.runId,
+    [
+      'git',
+      ...prefix,
+      'clone',
+      '--branch',
+      body.branch,
+      '--single-branch',
+      `https://github.com/${body.owner}/${body.repo}.git`,
+      '.',
+    ],
+    { timeout: 600, network: 'bridge', env },
+  );
+  if (clone.exitCode) throw new Error(`Clone failed: ${clone.stderr}`);
+  const sha = await exec(body.runId, ['git', 'rev-parse', 'HEAD'], 30);
+  return { sha: sha.stdout.trim() };
 });
-app.post('/agent', async req => {
-  const body = z.object({ runId: runIdSchema, backend: backendSchema, prompt: z.string().max(300_000), timeoutSeconds: z.number().int().max(3600), phase: z.string() }).parse(req.body);
-  return execute(body.runId, ['sh', '-lc', promptScript], { timeout: body.timeoutSeconds, network: 'bridge', env: [`SDLCPROMPT=${body.prompt}`], binds: [`${codexAuthMount}:/home/worker/.codex:rw`] });
+app.post('/agent', async (req) => {
+  const body = z
+    .object({
+      runId: runIdSchema,
+      backend: backendSchema,
+      prompt: z.string().max(300_000),
+      timeoutSeconds: z.number().int().max(3600),
+      phase: z.string(),
+    })
+    .parse(req.body);
+  return execute(body.runId, ['sh', '-lc', promptScript], {
+    timeout: body.timeoutSeconds,
+    network: 'bridge',
+    env: [`SDLCPROMPT=${body.prompt}`],
+    binds: [`${codexAuthMount}:/home/worker/.codex:rw`],
+  });
 });
-app.post('/analyze', async req => {
-  const body = z.object({ owner: z.string().regex(/^[\w.-]+$/), repo: z.string().regex(/^[\w.-]+$/), branch: z.string().min(1).max(200).refine(v => !v.startsWith('-') && !v.includes('..')), prompt: z.string().max(300_000), githubToken: z.string().min(1).optional() }).parse(req.body);
+app.post('/analyze', async (req) => {
+  const body = z
+    .object({
+      owner: z.string().regex(/^[\w.-]+$/),
+      repo: z.string().regex(/^[\w.-]+$/),
+      branch: z
+        .string()
+        .min(1)
+        .max(200)
+        .refine((v) => !v.startsWith('-') && !v.includes('..')),
+      prompt: z.string().max(300_000),
+      githubToken: z.string().min(1).optional(),
+    })
+    .parse(req.body);
   const id = randomUUID();
   await docker.createVolume({ Name: volumeName(id), Labels: { 'sdlc.analyze': 'true' } });
   try {
     const { env, prefix } = gitAuth(body.githubToken);
-    const clone = await execute(id, ['git', ...prefix, 'clone', '--depth', '1', '--branch', body.branch, '--single-branch', `https://github.com/${body.owner}/${body.repo}.git`, '.'], { timeout: 600, network: 'bridge', env });
+    const clone = await execute(
+      id,
+      [
+        'git',
+        ...prefix,
+        'clone',
+        '--depth',
+        '1',
+        '--branch',
+        body.branch,
+        '--single-branch',
+        `https://github.com/${body.owner}/${body.repo}.git`,
+        '.',
+      ],
+      { timeout: 600, network: 'bridge', env },
+    );
     if (clone.exitCode) throw new Error(`Clone failed: ${clone.stderr.slice(-500)}`);
-    return await execute(id, ['sh', '-lc', promptScript], { timeout: 420, network: 'bridge', env: [`SDLCPROMPT=${body.prompt}`], binds: [`${codexAuthMount}:/home/worker/.codex:rw`] });
-  } finally { await docker.getVolume(volumeName(id)).remove().catch(() => undefined); }
+    return await execute(id, ['sh', '-lc', promptScript], {
+      timeout: 420,
+      network: 'bridge',
+      env: [`SDLCPROMPT=${body.prompt}`],
+      binds: [`${codexAuthMount}:/home/worker/.codex:rw`],
+    });
+  } finally {
+    await docker
+      .getVolume(volumeName(id))
+      .remove()
+      .catch(() => undefined);
+  }
 });
-app.post('/command', async req => {
+app.post('/command', async (req) => {
   const body = jobSchema.parse(req.body);
   let acceptanceVolume: string | undefined;
   try {
     if (body.acceptanceFiles) {
       acceptanceVolume = `sdlc-accept-${randomUUID()}`;
       await docker.createVolume({ Name: acceptanceVolume, Labels: { 'sdlc.run': body.runId } });
-      const chown = await docker.createContainer({ Image: workerImage, Cmd: ['sh', '-lc', 'chown -R 10001:10001 /acceptance'], User: '0:0',
-        HostConfig: { AutoRemove: false, NetworkMode: 'none', Binds: [`${acceptanceVolume}:/acceptance`] } });
-      try { await chown.start(); const status = await chown.wait(); if (status.StatusCode) throw new Error('Unable to prepare the acceptance volume'); }
-      finally { await chown.remove({ force: true }).catch(() => undefined); }
+      const chown = await docker.createContainer({
+        Image: workerImage,
+        Cmd: ['sh', '-lc', 'chown -R 10001:10001 /acceptance'],
+        User: '0:0',
+        HostConfig: { AutoRemove: false, NetworkMode: 'none', Binds: [`${acceptanceVolume}:/acceptance`] },
+      });
+      try {
+        await chown.start();
+        const status = await chown.wait();
+        if (status.StatusCode) throw new Error('Unable to prepare the acceptance volume');
+      } finally {
+        await chown.remove({ force: true }).catch(() => undefined);
+      }
       for (const file of body.acceptanceFiles) {
         for (const stage of acceptanceWrites(file.path, file.content)) {
-          const write = await execute(body.runId, stage.argv, { timeout: 60, network: 'none', env: stage.env, binds: [`${acceptanceVolume}:/acceptance`] });
+          const write = await execute(body.runId, stage.argv, {
+            timeout: 60,
+            network: 'none',
+            env: stage.env,
+            binds: [`${acceptanceVolume}:/acceptance`],
+          });
           if (write.exitCode) throw new Error(`Unable to stage acceptance file ${file.path}`);
         }
       }
     }
     const network = body.command.kind === 'setup' ? 'bridge' : 'none';
-    const result = await execute(body.runId, body.command.argv, { timeout: body.command.timeoutSeconds, network, binds: acceptanceVolume ? [`${acceptanceVolume}:/acceptance:ro`] : [] });
-    if (body.command.reportPath) result.files[body.command.reportPath] = await readFile(body.runId, body.command.reportPath) || result.stdout;
+    const result = await execute(body.runId, body.command.argv, {
+      timeout: body.command.timeoutSeconds,
+      network,
+      binds: acceptanceVolume ? [`${acceptanceVolume}:/acceptance:ro`] : [],
+    });
+    if (body.command.reportPath)
+      result.files[body.command.reportPath] = (await readFile(body.runId, body.command.reportPath)) || result.stdout;
     return result;
+  } finally {
+    if (acceptanceVolume)
+      await docker
+        .getVolume(acceptanceVolume)
+        .remove()
+        .catch(() => undefined);
   }
-  finally { if (acceptanceVolume) await docker.getVolume(acceptanceVolume).remove().catch(() => undefined); }
 });
-app.post('/commit', async req => {
-  const body = z.object({ runId: runIdSchema, message: z.string().min(1).max(200), baseSha: z.string().regex(/^[a-f0-9]{40}$/) }).parse(req.body);
-  for (const command of [['git','config','user.name','SDLC Control Plane'], ['git','config','user.email','sdlc@localhost'], ['git','add','-A'], ['git','commit','--allow-empty','-m',body.message]]) { const result = await exec(body.runId, command, 120); if (result.exitCode) throw new Error(result.stderr); }
-  const sha = (await exec(body.runId, ['git','rev-parse','HEAD'], 30)).stdout.trim(); const changed = (await exec(body.runId, ['git','diff','--name-only',body.baseSha,'HEAD'], 30)).stdout.trim().split(/\r?\n/).filter(Boolean); return { sha, changed };
+app.post('/commit', async (req) => {
+  const body = z
+    .object({ runId: runIdSchema, message: z.string().min(1).max(200), baseSha: z.string().regex(/^[a-f0-9]{40}$/) })
+    .parse(req.body);
+  for (const command of [
+    ['git', 'config', 'user.name', 'SDLC Control Plane'],
+    ['git', 'config', 'user.email', 'sdlc@localhost'],
+    ['git', 'add', '-A'],
+    ['git', 'commit', '--allow-empty', '-m', body.message],
+  ]) {
+    const result = await exec(body.runId, command, 120);
+    if (result.exitCode) throw new Error(result.stderr);
+  }
+  const sha = (await exec(body.runId, ['git', 'rev-parse', 'HEAD'], 30)).stdout.trim();
+  const changed = (await exec(body.runId, ['git', 'diff', '--name-only', body.baseSha, 'HEAD'], 30)).stdout
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+  return { sha, changed };
 });
-app.post('/diff', async req => { const body = z.object({ runId: runIdSchema, baseSha: z.string().regex(/^[a-f0-9]{40}$/) }).parse(req.body); const result = await exec(body.runId, ['git','diff','--no-ext-diff',body.baseSha,'HEAD'], 120); if (result.exitCode) throw new Error(result.stderr); return { diff: result.stdout }; });
-app.post('/push', async req => { const body = z.object({ runId: runIdSchema, branch: z.string().regex(/^[A-Za-z0-9._/-]+$/).refine(v => !v.startsWith('-') && !v.includes('..')), githubToken: z.string().min(1).optional() }).parse(req.body); const { env, prefix } = gitAuth(body.githubToken); const remote = await execute(body.runId, ['git', ...prefix, 'ls-remote', '--heads', 'origin', `refs/heads/${body.branch}`], { timeout: 60, network: 'bridge', env }); if (remote.exitCode) throw new Error(remote.stderr); const expected = remote.stdout.trim().split(/\s+/)[0] || ''; const result = await execute(body.runId, ['git', ...prefix, 'push', 'origin', `HEAD:refs/heads/${body.branch}`, `--force-with-lease=refs/heads/${body.branch}:${expected}`], { timeout: 180, network: 'bridge', env }); if (result.exitCode) throw new Error(result.stderr); return { ok: true }; });
-app.post('/destroy', async req => { const { runId } = z.object({ runId: runIdSchema }).parse(req.body); for (const id of active.get(runId) || []) await docker.getContainer(id).kill().catch(() => undefined); active.delete(runId); await docker.getVolume(volumeName(runId)).remove().catch(() => undefined); return { ok: true }; });
-app.listen({ port: Number(process.env.RUNNER_PORT || 4311), host: process.env.RUNNER_HOST || '127.0.0.1' }).catch(error => { app.log.error(error); process.exit(1); });
+app.post('/diff', async (req) => {
+  const body = z.object({ runId: runIdSchema, baseSha: z.string().regex(/^[a-f0-9]{40}$/) }).parse(req.body);
+  const result = await exec(body.runId, ['git', 'diff', '--no-ext-diff', body.baseSha, 'HEAD'], 120);
+  if (result.exitCode) throw new Error(result.stderr);
+  return { diff: result.stdout };
+});
+app.post('/push', async (req) => {
+  const body = z
+    .object({
+      runId: runIdSchema,
+      branch: z
+        .string()
+        .regex(/^[A-Za-z0-9._/-]+$/)
+        .refine((v) => !v.startsWith('-') && !v.includes('..')),
+      githubToken: z.string().min(1).optional(),
+    })
+    .parse(req.body);
+  const { env, prefix } = gitAuth(body.githubToken);
+  const remote = await execute(
+    body.runId,
+    ['git', ...prefix, 'ls-remote', '--heads', 'origin', `refs/heads/${body.branch}`],
+    { timeout: 60, network: 'bridge', env },
+  );
+  if (remote.exitCode) throw new Error(remote.stderr);
+  const expected = remote.stdout.trim().split(/\s+/)[0] || '';
+  const result = await execute(
+    body.runId,
+    [
+      'git',
+      ...prefix,
+      'push',
+      'origin',
+      `HEAD:refs/heads/${body.branch}`,
+      `--force-with-lease=refs/heads/${body.branch}:${expected}`,
+    ],
+    { timeout: 180, network: 'bridge', env },
+  );
+  if (result.exitCode) throw new Error(result.stderr);
+  return { ok: true };
+});
+app.post('/destroy', async (req) => {
+  const { runId } = z.object({ runId: runIdSchema }).parse(req.body);
+  for (const id of active.get(runId) || [])
+    await docker
+      .getContainer(id)
+      .kill()
+      .catch(() => undefined);
+  active.delete(runId);
+  await docker
+    .getVolume(volumeName(runId))
+    .remove()
+    .catch(() => undefined);
+  return { ok: true };
+});
+app
+  .listen({ port: Number(process.env.RUNNER_PORT || 4311), host: process.env.RUNNER_HOST || '127.0.0.1' })
+  .catch((error) => {
+    app.log.error(error);
+    process.exit(1);
+  });

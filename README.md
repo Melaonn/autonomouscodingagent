@@ -65,7 +65,7 @@ npm run dev
 
 Development uses `http://127.0.0.1:5173` and the API at port 4310. Register chat with `./connect-codex.ps1 -EnvironmentFile '.env' -ProjectPath 'C:\path\to\project'`. Do not run Compose and development servers on the same ports.
 
-Run `npm run check` for type checking, lint, tests, and build. Dashboard E2E tests run separately with `npm run test:e2e` against a fresh development instance.
+Run `npm run format` after editing. `npm run check` enforces formatting, type checking, lint, tests, and the production build. Dashboard E2E tests run separately with `npm run test:e2e` against a fresh development instance.
 
 ## Documentation
 

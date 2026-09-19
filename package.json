@@ -10,11 +10,13 @@
   "scripts": {
     "dev": "concurrently -k -n api,web \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
     "build": "npm run build -w apps/web && npm run build -w apps/server",
+    "format": "prettier --write \"{apps,shared,tests}/**/*.{ts,tsx,css}\" \"*.{js,ts,json}\"",
+    "format:check": "prettier --check \"{apps,shared,tests}/**/*.{ts,tsx,css}\" \"*.{js,ts,json}\"",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "check": "npm run format:check && npm run typecheck && npm run lint && npm test && npm run build",
     "start": "node apps/server/dist/index.js",
     "runner": "tsx apps/server/src/runner-main.ts"
   },
@@ -42,13 +44,19 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.1.0",
     "concurrently": "^9.2.1",
-    "esbuild": "^0.27.0",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.0",
+    "prettier": "^3.9.8",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.48.0",
     "vite": "^7.2.0",
     "vitest": "^4.0.0"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "trailingComma": "all",
+    "printWidth": 120
   },
   "engines": {
     "node": ">=24"

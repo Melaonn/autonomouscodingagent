@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git curl ripgre
  && curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks \
  && useradd -m -u 10001 worker && mkdir -p /workspace /control && chown -R worker:worker /workspace /control
 ENV PATH="/opt/security/bin:/home/worker/.local/bin:${PATH}" HOME=/home/worker
-COPY docker/worker/sdlc-read-file docker/worker/sdlc-git-credential /usr/local/bin/
+COPY docker/worker/sdlc-read-file /usr/local/bin/
 COPY docker/worker/semgrep.yml /opt/sdlc/semgrep.yml
 RUN chmod 0755 /usr/local/bin/sdlc-*
 USER worker

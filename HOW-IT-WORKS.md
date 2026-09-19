@@ -110,8 +110,6 @@ The health check verifies only that the configured URL returns a successful resp
 
 The public demo repository uses simulated deployment and rollback workflows and a GitHub repository endpoint as its health URL. It tests orchestration without releasing an application.
 
-The repository policy stores `automaticMaintenance`, but the current monitor creates an incident after repeated failures regardless of that value. Treat it as a future policy switch until the engine enforces it.
-
 ## Verification status
 
 `npm run check` runs TypeScript checking, ESLint, Vitest, and production builds. Tests cover gate parsing, run leases, the engine state machine, acceptance-file staging, and MCP calls through the real local API with external systems mocked.
