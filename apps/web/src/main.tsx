@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   ChevronRight,
   Circle,
-  Clock3,
   Code2,
   Database,
   FileCheck2,
@@ -25,7 +24,6 @@ import {
   Rocket,
   Search,
   ShieldCheck,
-  TerminalSquare,
   UserCheck,
   Wrench,
   X,
@@ -366,11 +364,28 @@ function Metric({
     </div>
   );
 }
+
+function DetailList({ title, items }: { title: string; items?: string[] }) {
+  if (!items?.length) return null;
+  return (
+    <div className="detail-list">
+      <h4>{title}</h4>
+      <ul>
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function RunDetail({ id, back }: { id: string; back: () => void }) {
   const [bundle, setBundle] = useState<RunBundle | null>(null);
   const [error, setError] = useState('');
   const [answer, setAnswer] = useState('');
   const [approve, setApprove] = useState(false);
+  const [showAllEvents, setShowAllEvents] = useState(false);
+  const [showAllArtifacts, setShowAllArtifacts] = useState(false);
   const load = () =>
     api<RunBundle>(`/api/runs/${id}`)
       .then(setBundle)
@@ -400,6 +415,14 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
   const guidance = runGuidance(run);
   const latestEvent = bundle.events.at(-1);
   const phaseNumber = seven.indexOf(run.phase) + 1;
+  const events = bundle.events.slice().reverse();
+  const visibleEvents = showAllEvents ? events : events.slice(0, 8);
+  const visibleArtifacts = showAllArtifacts ? bundle.artifacts : bundle.artifacts.slice(0, 8);
+  const gateTotal = run.gates.length || run.policy.checks.length;
+  const gatePassed = run.gates.filter((gate) => ['pass', 'waived'].includes(gate.status)).length;
+  const gateFailed = run.gates.filter((gate) => ['fail', 'error'].includes(gate.status)).length;
+  const gatePending = Math.max(0, gateTotal - gatePassed - gateFailed);
+  const reviewByCriterion = new Map(run.review?.criteria.map((criterion) => [criterion.id, criterion]) || []);
   return (
     <>
       <header className="detail-head">
@@ -419,7 +442,19 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
               <p>{run.prompt}</p>
             </details>
           </div>
-          <Badge status={run.status} />
+          <div className="detail-actions">
+            <Badge status={run.status} />
+            {run.prUrl && (
+              <a className="button quiet" href={run.prUrl} target="_blank" rel="noreferrer">
+                <Github />
+                Pull request
+              </a>
+            )}
+            <a className="button quiet" href={`/api/runs/${id}/report`}>
+              <FileCheck2 />
+              Evidence report
+            </a>
+          </div>
         </div>
       </header>
       {error && (
@@ -475,7 +510,21 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           </button>
         </div>
       )}
-      <section className={`run-focus ${guidance.action ? 'action' : ''}`}>
+      <nav className="run-detail-nav" aria-label="Run detail sections">
+        <a href="#run-overview">
+          <Activity /> Overview
+        </a>
+        <a href="#work-definition">
+          <Archive /> Work definition
+        </a>
+        <a href="#verification">
+          <ShieldCheck /> Verification
+        </a>
+        <a href="#run-history">
+          <Database /> History
+        </a>
+      </nav>
+      <section id="run-overview" className={`run-focus run-section-anchor ${guidance.action ? 'action' : ''}`}>
         <div className="focus-icon">{guidance.action ? <UserCheck /> : <Activity />}</div>
         <div className="focus-copy">
           <span className="eyebrow">{guidance.action ? 'ACTION REQUIRED' : 'HAPPENING NOW'}</span>
@@ -489,142 +538,297 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
         </div>
         <PhaseRail run={run} />
       </section>
-      <div className="detail-grid">
-        <section className="panel span2">
+      <section className="run-facts" aria-label="Run summary">
+        <div>
+          <span>Mode</span>
+          <strong>{run.mode || 'delivery'}</strong>
+        </div>
+        <div>
+          <span>Repository</span>
+          <strong>
+            {run.policy.owner}/{run.policy.repo}
+          </strong>
+        </div>
+        <div>
+          <span>Policy</span>
+          <strong>Version {run.policy.version}</strong>
+        </div>
+        <div>
+          <span>Revision</span>
+          <strong>{(run.candidateSha || run.candidateDigest || run.workspace.headSha).slice(0, 9)}</strong>
+        </div>
+      </section>
+      <div className="detail-sections">
+        <section id="work-definition" className="panel run-section run-section-anchor">
           <div className="panel-head">
             <div>
-              <h2>Lifecycle evidence</h2>
-              <p>{run.step.replaceAll('-', ' ')}</p>
+              <p className="section-kicker">01 · WORK DEFINITION</p>
+              <h2>What Codex is building</h2>
+              <p>Complete scope, execution plan, acceptance criteria, and technical design.</p>
             </div>
-            <a className="button quiet" href={`/api/runs/${id}/report`}>
-              <FileCheck2 />
-              Report
-            </a>
+            <Archive />
           </div>
-          <div className="evidence-grid">
-            <Evidence title="Planning" icon={Clock3} ready={!!run.plan}>
-              <p>{run.plan?.scope || 'Pending'}</p>
-              {run.plan && (
-                <small>
-                  {run.plan.estimatedEffort} · {run.plan.costEstimate}
-                </small>
+          <div className="definition-grid">
+            <article className="definition-card">
+              <div className="subsection-head">
+                <span>Plan</span>
+                {run.plan && <CheckCircle2 />}
+              </div>
+              {run.plan ? (
+                <>
+                  <p className="definition-lead">{run.plan.scope}</p>
+                  <ol className="plan-steps">
+                    {run.plan.steps.map((step, index) => (
+                      <li key={`${index}-${step}`}>
+                        <span>{index + 1}</span>
+                        <p>{step}</p>
+                      </li>
+                    ))}
+                  </ol>
+                  <div className="definition-meta">
+                    <span>{run.plan.estimatedEffort}</span>
+                    <span>{run.plan.costEstimate}</span>
+                  </div>
+                </>
+              ) : (
+                <Empty title="Plan pending" text="Scope and implementation steps will appear here." compact />
               )}
-            </Evidence>
-            <Evidence title="Requirements" icon={Archive} ready={!!run.contract}>
-              <p>{run.contract ? `${run.contract.criteria.length} acceptance criteria` : 'Pending'}</p>
-              {run.contract?.criteria.slice(0, 3).map((c) => (
-                <small key={c.id}>
-                  {c.id} · {c.description}
-                </small>
-              ))}
-            </Evidence>
-            <Evidence title="Design" icon={Boxes} ready={!!run.design}>
-              <p>{run.design?.architecture || 'Pending'}</p>
-            </Evidence>
-            <Evidence title="Implementation" icon={TerminalSquare} ready={!!run.candidateDigest}>
-              <p>{run.candidateDigest ? `Verified tree ${run.candidateDigest.slice(0, 12)}` : 'Pending'}</p>
-              <small>{run.attempt} repair attempts</small>
-            </Evidence>
+            </article>
+            <article className="definition-card criteria-card">
+              <div className="subsection-head">
+                <span>Acceptance criteria</span>
+                <strong>{run.contract?.criteria.length || 0}</strong>
+              </div>
+              {run.contract?.criteria.length ? (
+                <div className="criteria-list">
+                  {run.contract.criteria.map((criterion) => {
+                    const verdict = reviewByCriterion.get(criterion.id);
+                    return (
+                      <div className={verdict?.satisfied ? 'satisfied' : ''} key={criterion.id}>
+                        <span>{verdict?.satisfied ? <Check /> : <Circle />}</span>
+                        <div>
+                          <strong>{criterion.id}</strong>
+                          <p>{criterion.description}</p>
+                          {verdict?.evidence && <small>{verdict.evidence}</small>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <Empty title="Requirements pending" text="Measurable acceptance criteria will appear here." compact />
+              )}
+            </article>
+          </div>
+          <div className="definition-disclosures">
+            <details open={false}>
+              <summary>
+                <span>Technical design and test strategy</span>
+                <small>{run.design ? 'Architecture, interfaces, security, and compatibility' : 'Pending'}</small>
+              </summary>
+              {run.design ? (
+                <div className="disclosure-body">
+                  <p className="architecture-copy">{run.design.architecture}</p>
+                  <div className="detail-list-grid">
+                    <DetailList title="API contracts" items={run.design.apiContracts} />
+                    <DetailList title="Data changes" items={run.design.dataChanges} />
+                    <DetailList title="UI behavior" items={run.design.uiBehavior} />
+                    <DetailList title="Security" items={run.design.security} />
+                  </div>
+                  <div className="design-notes">
+                    <div>
+                      <span>Compatibility</span>
+                      <p>{run.design.compatibility}</p>
+                    </div>
+                    <div>
+                      <span>Test strategy</span>
+                      <p>{run.design.testStrategy}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <Empty title="Design pending" text="The technical blueprint will appear here." compact />
+              )}
+            </details>
+            <details>
+              <summary>
+                <span>Dependencies, assumptions, and risks</span>
+                <small>Supporting context for implementation decisions</small>
+              </summary>
+              <div className="disclosure-body detail-list-grid">
+                <DetailList title="Dependencies" items={run.plan?.dependencies} />
+                <DetailList title="Plan risks" items={run.plan?.risks} />
+                <DetailList title="Assumptions" items={run.contract?.assumptions} />
+                <DetailList title="Requirement risks" items={run.contract?.risks} />
+                <DetailList title="Non-goals" items={run.contract?.nonGoals} />
+              </div>
+            </details>
           </div>
         </section>
-        <section className="panel">
+        <section id="verification" className="panel run-section run-section-anchor">
           <div className="panel-head">
             <div>
-              <h2>Quality gates</h2>
-              <p>Bound to candidate revision</p>
+              <p className="section-kicker">02 · VERIFICATION</p>
+              <h2>Checks and review evidence</h2>
+              <p>Automated gates and acceptance review bound to the same candidate tree.</p>
             </div>
             <ShieldCheck />
           </div>
-          <div className="gate-list">
-            {!run.gates.length ? (
-              <Empty title="Verification pending" text="Gates appear after implementation." compact />
-            ) : (
-              run.gates.map((g) => (
-                <div className="gate" key={g.id}>
-                  <span className={g.status}>
-                    <GateIcon status={g.status} />
-                  </span>
-                  <div>
-                    <strong>{g.label}</strong>
-                    <small>
-                      {g.cached ? 'Reused' : g.tests === null ? 'Command' : `${g.tests} tests`} · {g.durationMs}ms
-                    </small>
-                  </div>
-                  <Badge status={g.status} />
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-        <section className="panel">
-          <div className="panel-head">
+          <div className="verification-summary" aria-label="Verification summary">
             <div>
-              <h2>Self-review</h2>
-              <p>Acceptance evidence checked in the same Codex session</p>
+              <span>Total gates</span>
+              <strong>{gateTotal}</strong>
             </div>
-            <Search />
-          </div>
-          {run.review ? (
-            <>
-              <p className="review-summary">{run.review.summary}</p>
-              {run.review.findings.map((f) => (
-                <div className="finding" key={f.id}>
-                  <span className={f.severity}>{f.severity}</span>
-                  <div>
-                    <strong>
-                      {f.file}:{f.line}
-                    </strong>
-                    <p>{f.description}</p>
-                  </div>
-                </div>
-              ))}
-            </>
-          ) : (
-            <Empty title="Review pending" text="Review begins after automated gates pass." compact />
-          )}
-        </section>
-        <section className="panel span2">
-          <div className="panel-head">
-            <div>
-              <h2>Activity</h2>
-              <p>Durable controller events</p>
+            <div className="passed">
+              <span>Passed</span>
+              <strong>{gatePassed}</strong>
             </div>
-            <Activity />
+            <div className={gateFailed ? 'failed' : ''}>
+              <span>Failed</span>
+              <strong>{gateFailed}</strong>
+            </div>
+            <div>
+              <span>Pending</span>
+              <strong>{gatePending}</strong>
+            </div>
           </div>
-          <div className="timeline">
-            {bundle.events
-              .slice()
-              .reverse()
-              .map((e) => (
-                <div key={e.id}>
-                  <span>
-                    <Circle />
-                  </span>
-                  <time>{new Date(e.time).toLocaleTimeString()}</time>
-                  <b>{e.kind.replaceAll('-', ' ')}</b>
-                  <p>{e.message}</p>
-                </div>
-              ))}
+          <div className="verification-grid">
+            <div className="verification-pane">
+              <div className="subsection-head">
+                <span>Quality gates</span>
+                <small>{run.candidateDigest ? `Tree ${run.candidateDigest.slice(0, 9)}` : 'Candidate pending'}</small>
+              </div>
+              <div className="gate-list">
+                {!run.gates.length ? (
+                  <Empty title="Verification pending" text="Configured gates appear after implementation." compact />
+                ) : (
+                  run.gates.map((gate) => (
+                    <div className="gate" key={gate.id}>
+                      <span className={gate.status}>
+                        <GateIcon status={gate.status} />
+                      </span>
+                      <div>
+                        <strong>{gate.label}</strong>
+                        <small>
+                          {gate.cached ? 'Reused' : gate.tests === null ? 'Command' : `${gate.tests} tests`} ·{' '}
+                          {gate.durationMs}ms
+                        </small>
+                        {gate.findings.map((finding) => (
+                          <em key={finding}>{finding}</em>
+                        ))}
+                      </div>
+                      {gate.artifactId && (
+                        <a className="gate-evidence" href={`/api/artifacts/${gate.artifactId}`}>
+                          Evidence
+                        </a>
+                      )}
+                      <Badge status={gate.status} />
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+            <div className="verification-pane">
+              <div className="subsection-head">
+                <span>Self-review</span>
+                <Search />
+              </div>
+              {run.review ? (
+                <>
+                  <p className="review-summary">{run.review.summary}</p>
+                  {!run.review.findings.length && (
+                    <div className="review-clear">
+                      <CheckCircle2 /> No review findings
+                    </div>
+                  )}
+                  {run.review.findings.map((finding) => (
+                    <div className="finding" key={finding.id}>
+                      <span className={finding.severity}>{finding.severity}</span>
+                      <div>
+                        <strong>
+                          {finding.file}:{finding.line}
+                        </strong>
+                        <p>{finding.description}</p>
+                        <small>{finding.correction}</small>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <Empty title="Review pending" text="Review begins after automated gates pass." compact />
+              )}
+            </div>
           </div>
         </section>
-        <section className="panel">
+        <section id="run-history" className="panel run-section run-section-anchor">
           <div className="panel-head">
             <div>
-              <h2>Artifacts</h2>
-              <p>Hashed source and evidence</p>
+              <p className="section-kicker">03 · HISTORY</p>
+              <h2>Activity and evidence files</h2>
+              <p>Recent updates stay concise; every durable event and artifact remains available.</p>
             </div>
             <Database />
           </div>
-          <div className="artifact-list">
-            {bundle.artifacts.map((a) => (
-              <a href={`/api/artifacts/${a.id}`} key={a.id}>
-                <FileCheck2 />
-                <span>
-                  <strong>{a.name}</strong>
-                  <small>sha256 {a.hash.slice(0, 12)}…</small>
-                </span>
-              </a>
-            ))}
+          <div className="history-grid">
+            <div className="history-pane">
+              <div className="subsection-head">
+                <span>Activity</span>
+                <div>
+                  <small>{bundle.events.length} events</small>
+                  {bundle.events.length > 8 && (
+                    <button className="text-button" onClick={() => setShowAllEvents(!showAllEvents)}>
+                      {showAllEvents ? 'Show recent' : 'Show all activity'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {visibleEvents.length ? (
+                <div className="timeline">
+                  {visibleEvents.map((event) => (
+                    <div key={event.id}>
+                      <span>
+                        <Circle />
+                      </span>
+                      <time>{new Date(event.time).toLocaleTimeString()}</time>
+                      <div>
+                        <b>{event.kind.replaceAll('-', ' ')}</b>
+                        <p>{event.message}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Empty title="No activity yet" text="Lifecycle events will appear here." compact />
+              )}
+            </div>
+            <div className="history-pane">
+              <div className="subsection-head">
+                <span>Evidence files</span>
+                <div>
+                  <small>{bundle.artifacts.length} files</small>
+                  {bundle.artifacts.length > 8 && (
+                    <button className="text-button" onClick={() => setShowAllArtifacts(!showAllArtifacts)}>
+                      {showAllArtifacts ? 'Show recent' : 'Show all files'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {visibleArtifacts.length ? (
+                <div className="artifact-list">
+                  {visibleArtifacts.map((artifact) => (
+                    <a href={`/api/artifacts/${artifact.id}`} key={artifact.id}>
+                      <FileCheck2 />
+                      <span>
+                        <strong>{artifact.name}</strong>
+                        <small>sha256 {artifact.hash.slice(0, 12)}…</small>
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <Empty title="No evidence files yet" text="Plans, reports, and logs will appear here." compact />
+              )}
+            </div>
           </div>
         </section>
       </div>
@@ -684,30 +888,6 @@ function GateIcon({ status }: { status: string }) {
     <X />
   ) : (
     <LoaderCircle className="spin" />
-  );
-}
-function Evidence({
-  title,
-  icon: Icon,
-  ready,
-  children,
-}: {
-  title: string;
-  icon: React.ComponentType<{ size?: number }>;
-  ready: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={`evidence ${ready ? 'ready' : ''}`}>
-      <div>
-        <span>
-          <Icon size={17} />
-        </span>
-        <strong>{title}</strong>
-        {ready ? <CheckCircle2 /> : <Circle />}
-      </div>
-      {children}
-    </div>
   );
 }
 function RepositoriesPage() {
