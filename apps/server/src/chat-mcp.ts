@@ -3,7 +3,6 @@ import { z } from 'zod';
 import {
   contractSchema,
   designSchema,
-  phases,
   planSchema,
   reviewSchema,
   runModeSchema,
@@ -21,30 +20,32 @@ export interface ChatApi {
 type Detail = { run: Run; events: Event[]; artifacts: Artifact[] };
 const runInput = { runId: z.string().uuid() };
 const active = new Set(['running', 'repairing']);
+const approvedPlanSchema = planSchema.omit({ source: true });
+const nativeReviewSchema = reviewSchema.omit({ source: true, scope: true }).extend({
+  scope: z.enum(['uncommitted', 'base-branch', 'commit', 'custom']).default('uncommitted'),
+});
 
 function nextAction(run: Run) {
   if (run.status === 'completed' && run.step === 'validated')
     return 'Report that validation completed without workspace changes or publication, with its recorded evidence.';
   if (run.status === 'needs_input') return 'Ask the user the exact question, then call sdlc_answer.';
   if (run.status === 'needs_review')
-    return 'Ask the developer to type /review in this Codex project and choose Review uncommitted changes. After the native reviewer reports in this chat, submit its exact findings and acceptance evidence with sdlc_review.';
+    return 'Ask the developer to type /review in this Codex project and choose Review uncommitted changes. Submit the native findings once with sdlc_review.';
   if (run.status === 'awaiting_approval')
     return 'Ask the user to approve or reject the exact deployment in the local dashboard.';
   if (run.status === 'repairing') return 'Fix the reported failures in this same checkout, then call sdlc_verify.';
   if (run.status !== 'running') return 'Report this exact status and its evidence. Do not claim a failed run passed.';
-  if (run.phase === 'planning')
-    return 'Record the native Codex Plan mode output that the developer already approved, then call sdlc_plan. Do not repeat resolved planning questions.';
-  if (run.phase === 'requirements') return 'Derive measurable acceptance criteria, then call sdlc_requirements.';
-  if (run.phase === 'design') return 'Create the technical blueprint and test strategy, then call sdlc_design.';
-  if (run.phase === 'coding')
-    return 'Implement in the current checkout, keeping progress visible, then call sdlc_verify.';
+  if (run.phase === 'planning') return 'Retry sdlc_begin with the approved native plan.';
+  if (run.phase === 'requirements' || run.phase === 'design')
+    return 'Use the returned policy and company context, then submit requirements and design together with sdlc_spec.';
+  if (run.phase === 'coding') return 'Implement in the current checkout, then call sdlc_verify.';
   if (run.phase === 'testing' && run.step === 'native-review')
     return 'Wait for Codex native /review findings, then call sdlc_review with their exact evidence.';
   if (run.phase === 'deployment' && run.step === 'publish')
     return 'Create a feature branch, commit and push the verified files, then call sdlc_publish.';
   if (run.phase === 'deployment' && run.step === 'remote-ci')
-    return 'Required GitHub CI is running. Use sdlc_sync or sdlc_status to follow it.';
-  return 'Continue the current lifecycle step and use sdlc_status for recorded evidence.';
+    return 'Required GitHub CI is running and the server is following it automatically.';
+  return 'Continue the current lifecycle step. Read sdlc_status only when the user asks or recovery is needed.';
 }
 
 function summary(run: Run) {
@@ -85,10 +86,10 @@ function assertProtectedPaths(workspace: InspectedWorkspace, repository: Reposit
 
 export function createChatServer(api: ChatApi) {
   const server = new McpServer(
-    { name: 'sdlc', version: '0.3.0' },
+    { name: 'sdlc', version: '0.4.0' },
     {
       instructions:
-        "Use these tools as the control plane for feature and bug work. Native Codex Plan mode handles discovery and user questions before implementation. The current Codex app or CLI conversation is the only coding agent: record the approved native plan, inspect and edit the developer's existing checkout, run sdlc_verify, wait for native /review findings, repair failures in the same conversation, and publish only verified content. Never start another Codex process, clone the repository, simulate Plan mode, or replace /review with an ad hoc review. Tool evidence, not model prose, decides completion. Deployment approval stays in the dashboard.",
+        'Use the low-ceremony path for feature and bug work: sdlc_begin once with the approved native plan, sdlc_spec once after reading returned company context, sdlc_verify after implementation, sdlc_review after native /review, and sdlc_publish after committing and pushing. Do not send manual progress updates or poll CI; the server handles both. Use status and recovery tools only when needed. Never start another Codex process, clone the repository, simulate Plan mode, or replace /review with an ad hoc review. Tool evidence, not model prose, decides completion. Deployment approval stays in the dashboard.',
     },
   );
   const result = (value: unknown) => ({
@@ -103,6 +104,60 @@ export function createChatServer(api: ChatApi) {
         isError: true,
       };
     }
+  };
+
+  const beginRun = async (
+    workspaceRoot: string,
+    prompt: string,
+    mode: 'delivery' | 'validation',
+    plan: z.infer<typeof approvedPlanSchema>,
+  ) => {
+    const workspace = await inspectWorkspace(workspaceRoot);
+    const repositories = await api.request<Repository[]>('/api/repositories');
+    const repository = repositories.find(
+      (candidate) =>
+        candidate.owner.toLowerCase() === workspace.owner.toLowerCase() &&
+        candidate.repo.toLowerCase() === workspace.repo.toLowerCase(),
+    );
+    if (!repository)
+      throw new Error(
+        `Repository ${workspace.owner}/${workspace.repo} is not configured. Add it in the dashboard first.`,
+      );
+    assertProtectedPaths(workspace, repository);
+    const created = await api.request<{ run: Run; reused: boolean }>('/api/runs', {
+      repositoryId: repository.id,
+      prompt,
+      mode,
+      workspace: {
+        branch: workspace.branch,
+        headSha: workspace.headSha,
+        digest: workspace.digest,
+        dirty: workspace.dirty,
+        changes: workspace.changes,
+      },
+    });
+    const run =
+      created.run.phase === 'planning'
+        ? await api.request<Run>(`/api/runs/${created.run.id}/plan`, { source: 'codex-plan-mode', ...plan })
+        : created.run;
+    return {
+      reused: created.reused,
+      ...summary(run),
+      workspace: {
+        root: workspace.root,
+        branch: workspace.branch,
+        startingCommit: run.workspace.headSha,
+        dirtyAtStart: run.workspace.dirty,
+        changesAtStart: run.workspace.changes,
+      },
+      policy: {
+        version: run.policy.version,
+        standards: run.policy.standards,
+        checks: run.policy.checks.map((check) => ({ id: check.id, kind: check.kind, command: check.argv })),
+        protectedPaths: run.policy.protectedPaths,
+      },
+      companyContext: run.context,
+    };
   };
 
   server.registerTool(
@@ -131,115 +186,38 @@ export function createChatServer(api: ChatApi) {
   );
 
   server.registerTool(
-    'sdlc_start',
+    'sdlc_begin',
     {
       description:
-        'Start a governed SDLC run in the current local checkout. Use delivery for change requests and validation only for explicitly non-mutating audits or smoke tests. Pass the absolute repository root and complete user request. No clone or second agent is created.',
+        'Start or resume the governed run and record the approved native Codex plan in one call. Returns company context, policy and configured check IDs needed for the single specification call.',
       inputSchema: {
         workspaceRoot: z.string().min(1),
         prompt: z.string().min(10).max(100000),
         mode: runModeSchema.default('delivery'),
+        plan: approvedPlanSchema,
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ workspaceRoot, prompt, mode }) =>
+    ({ workspaceRoot, prompt, mode, plan }) => protect(() => beginRun(workspaceRoot, prompt, mode, plan)),
+  );
+
+  server.registerTool(
+    'sdlc_spec',
+    {
+      description:
+        'Record requirements and technical design together after reading the policy and company context returned by sdlc_begin. If a real stakeholder question remains, the run pauses before design.',
+      inputSchema: { ...runInput, requirements: contractSchema, design: designSchema },
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    ({ runId, requirements, design }) =>
       protect(async () => {
-        const workspace = await inspectWorkspace(workspaceRoot);
-        const repositories = await api.request<Repository[]>('/api/repositories');
-        const repository = repositories.find(
-          (candidate) =>
-            candidate.owner.toLowerCase() === workspace.owner.toLowerCase() &&
-            candidate.repo.toLowerCase() === workspace.repo.toLowerCase(),
-        );
-        if (!repository)
-          throw new Error(
-            `Repository ${workspace.owner}/${workspace.repo} is not configured. Add it in the dashboard first.`,
-          );
-        assertProtectedPaths(workspace, repository);
-        const created = await api.request<{ run: Run; reused: boolean }>('/api/runs', {
-          repositoryId: repository.id,
-          prompt,
-          mode,
-          workspace: {
-            branch: workspace.branch,
-            headSha: workspace.headSha,
-            digest: workspace.digest,
-            dirty: workspace.dirty,
-            changes: workspace.changes,
-          },
-        });
-        return {
-          reused: created.reused,
-          ...summary(created.run),
-          workspace: {
-            root: workspace.root,
-            branch: workspace.branch,
-            startingCommit: workspace.headSha,
-            dirtyAtStart: workspace.dirty,
-            changesAtStart: workspace.changes,
-          },
-          policy: {
-            version: created.run.policy.version,
-            standards: created.run.policy.standards,
-            checks: created.run.policy.checks.map((check) => ({
-              id: check.id,
-              kind: check.kind,
-              command: check.argv,
-            })),
-            protectedPaths: created.run.policy.protectedPaths,
-          },
-          companyContext: created.run.context,
-        };
+        let run = (await api.request<Detail>(`/api/runs/${runId}`)).run;
+        if (run.phase === 'requirements') run = await api.request<Run>(`/api/runs/${runId}/requirements`, requirements);
+        if (run.status === 'needs_input') return summary(run);
+        if (run.phase === 'design') run = await api.request<Run>(`/api/runs/${runId}/design`, design);
+        if (run.phase === 'planning') throw new Error('Call sdlc_begin with the approved native plan first');
+        return summary(run);
       }),
-  );
-
-  server.registerTool(
-    'sdlc_plan',
-    {
-      description:
-        'Record the plan the developer approved in native Codex Plan mode after they switch to implementation. Reuse its resolved questions; do not emulate Plan mode or re-plan.',
-      inputSchema: { ...runInput, plan: planSchema },
-      annotations: { readOnlyHint: false, destructiveHint: false },
-    },
-    ({ runId, plan }) => protect(async () => summary(await api.request<Run>(`/api/runs/${runId}/plan`, plan))),
-  );
-
-  server.registerTool(
-    'sdlc_requirements',
-    {
-      description:
-        'Record measurable requirements and acceptance criteria. Test criteria must reference configured check IDs.',
-      inputSchema: { ...runInput, requirements: contractSchema },
-      annotations: { readOnlyHint: false, destructiveHint: false },
-    },
-    ({ runId, requirements }) =>
-      protect(async () => summary(await api.request<Run>(`/api/runs/${runId}/requirements`, requirements))),
-  );
-
-  server.registerTool(
-    'sdlc_design',
-    {
-      description: 'Record the technical design and test strategy before implementation.',
-      inputSchema: { ...runInput, design: designSchema },
-      annotations: { readOnlyHint: false, destructiveHint: false },
-    },
-    ({ runId, design }) => protect(async () => summary(await api.request<Run>(`/api/runs/${runId}/design`, design))),
-  );
-
-  server.registerTool(
-    'sdlc_progress',
-    {
-      description: 'Record a meaningful phase or implementation progress update for the dashboard.',
-      inputSchema: {
-        ...runInput,
-        phase: z.enum(phases),
-        step: z.string().min(1).max(100),
-        message: z.string().min(1).max(2000),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false },
-    },
-    ({ runId, phase, step, message }) =>
-      protect(async () => summary(await api.request<Run>(`/api/runs/${runId}/progress`, { phase, step, message }))),
   );
 
   server.registerTool(
@@ -327,11 +305,14 @@ export function createChatServer(api: ChatApi) {
     'sdlc_review',
     {
       description:
-        'Record the exact findings from Codex native /review after all configured checks pass. Do not substitute an ad hoc review. Include its selected scope and evidence for every criterion.',
-      inputSchema: { ...runInput, review: reviewSchema },
+        'Record the exact findings from Codex native /review once after all configured checks pass. Native provenance and uncommitted scope are applied automatically.',
+      inputSchema: { ...runInput, review: nativeReviewSchema },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ runId, review }) => protect(async () => summary(await api.request<Run>(`/api/runs/${runId}/review`, review))),
+    ({ runId, review }) =>
+      protect(async () =>
+        summary(await api.request<Run>(`/api/runs/${runId}/review`, { source: 'codex-native-review', ...review })),
+      ),
   );
 
   server.registerTool(
@@ -358,16 +339,6 @@ export function createChatServer(api: ChatApi) {
           }),
         );
       }),
-  );
-
-  server.registerTool(
-    'sdlc_sync',
-    {
-      description: 'Refresh required GitHub CI and deployment workflow state for a published run.',
-      inputSchema: runInput,
-      annotations: { readOnlyHint: false, destructiveHint: false },
-    },
-    ({ runId }) => protect(async () => summary(await api.request<Run>(`/api/runs/${runId}/sync`, {}))),
   );
 
   server.registerTool(

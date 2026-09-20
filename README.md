@@ -36,11 +36,13 @@ After local gates pass, Codex and the dashboard ask you to type `/review` and ch
 
 Plan mode selection and `/review` are native Codex client actions. The harness cannot switch modes or enter slash commands on your behalf. They keep planning questions and review output visible in the existing Codex task rather than launching a hidden agent.
 
+The agent-facing path is intentionally small. A normal delivery uses five control-plane calls: begin the run with the approved plan, submit requirements and design together, verify, record native review, and publish. Coding progress and remote CI are followed automatically, so Codex does not repeatedly call progress, sync, or status tools. Recovery tools remain available when a task is interrupted.
+
 ## What happens after the prompt
 
-1. **Planning:** native Codex Plan mode inspects the current checkout, asks the developer any necessary questions, and produces the plan. After the developer accepts it, the harness records that approved plan with its native provenance.
-2. **Requirements:** it creates measurable acceptance criteria and maps testable criteria to configured checks. A real product ambiguity pauses for the user.
-3. **Design:** it records architecture, interfaces, data and UI changes, security decisions, compatibility, and test strategy.
+1. **Planning:** native Codex Plan mode inspects the current checkout, asks the developer any necessary questions, and produces the plan. One `sdlc_begin` call starts or resumes the run, records that plan, and returns the relevant company context and configured checks.
+2. **Requirements:** Codex creates measurable acceptance criteria and maps testable criteria to the returned checks. A real product ambiguity pauses for the user.
+3. **Design:** it records architecture, interfaces, data and UI changes, security decisions, compatibility, and test strategy in the same `sdlc_spec` call as requirements.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.
 5. **Testing:** the MCP bridge reports per-gate progress in Codex and the dashboard while running configured commands locally. Build, lint, types, unit, isolated E2E, secret scanning, static security, and dependency results are bound to the exact Git tree digest. Unchanged dependency manifests reuse the verified installation, and independent checks run with bounded concurrency. Failures return the lifecycle to repair.
 6. **Review:** after checks pass, the run waits for native Codex `/review` of the uncommitted changes. Its dedicated findings and acceptance evidence are recorded. Critical or high findings return to repair and require verification and review again.
