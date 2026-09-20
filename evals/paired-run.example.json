@@ -1,0 +1,26 @@
+{
+  "name": "Public paired benchmark",
+  "harnessRevision": "0000000000000000000000000000000000000000",
+  "model": "gpt-5.6-luna",
+  "reasoningEffort": "low",
+  "externalIsolation": false,
+  "executionVariant": "both",
+  "outputDirectory": "../.runtime/paired-benchmark/output",
+  "environmentInstructionsFile": "environment.example.md",
+  "harness": {
+    "instructionsFile": "../docs/codex-project-instructions.md",
+    "mcpCommand": "node",
+    "mcpArgs": ["../apps/server/dist/chat-main.js"],
+    "serverUrl": "http://127.0.0.1:4310",
+    "tokenEnvironmentVariable": "LOCAL_MCP_TOKEN"
+  },
+  "tasks": [
+    {
+      "id": "public-task-1",
+      "promptFile": "raw/public-task-1.txt",
+      "baseSha": "0000000000000000000000000000000000000000",
+      "baselineRoot": "worktrees/public-task-1-baseline",
+      "harnessRoot": "worktrees/public-task-1-harness"
+    }
+  ]
+}

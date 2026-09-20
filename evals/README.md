@@ -19,6 +19,15 @@ For every task:
 
 Use `codex exec --json` when collecting a controlled CLI trial. Its JSONL stream contains exact input, cached-input, output, and reasoning-output token counts. If the harness trial spans implementation, native review, and a repair turn, append all of their JSONL events to the same variant log.
 
+For repeatable CLI trials, copy `paired-run.example.json`, prepare two clean checkouts at the declared base commit, and run:
+
+```powershell
+$env:LOCAL_MCP_TOKEN = (Get-Content .env | Where-Object { $_ -like 'LOCAL_MCP_TOKEN=*' }).Split('=', 2)[1]
+npm run benchmark:run -- --input evals/paired-run.json
+```
+
+The runner gives both arms the exact same task text, model, reasoning effort, and starting commit. It creates isolated Codex homes so the baseline has no SDLC MCP or unrelated plugins, while the harness profile contains only the SDLC MCP and governed instructions. It captures JSONL and wall time automatically. A harness run stays in one implementation session across repairs; when policy requires native review, the runner invokes Codex review independently, records its usage, and resumes the original session to submit findings and repair blocking defects. The runner never commits, pushes, publishes, deploys, or exposes hidden checks.
+
 Raw model logs can contain source code and internal context. Keep them under `evals/raw/`, which is ignored by Git, and apply company retention controls.
 
 ## Experiment file

@@ -141,7 +141,12 @@ export class RunService {
       limits: { verifications: 6 },
       repeatedFailures: 0,
     };
-    await this.store.insertRun(run).catch(() => failure('This repository already has an active run'));
+    try {
+      await this.store.insertRun(run);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === '23505') failure('This repository already has an active run');
+      throw error;
+    }
     await this.store.event(
       run,
       'started',
