@@ -37,7 +37,7 @@ describe('dashboard authentication', () => {
     }
   });
 
-  it('uses the GitHub consent callback for both login and repository access', async () => {
+  it('uses the GitHub consent callback for identity without repository access', async () => {
     vi.stubEnv('GITHUB_CLIENT_ID', 'client-id');
     vi.stubEnv('GITHUB_CLIENT_SECRET', 'client-secret');
     vi.stubEnv('GITHUB_ALLOWED_USERS', 'octocat');
@@ -45,7 +45,7 @@ describe('dashboard authentication', () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ access_token: 'oauth-access-token', scope: 'repo,workflow,read:user' }), {
+        new Response(JSON.stringify({ access_token: 'oauth-access-token', scope: '' }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         }),
@@ -69,7 +69,7 @@ describe('dashboard authentication', () => {
       const location = new URL(authorization.headers.location!);
       const state = location.searchParams.get('state');
       expect(state).toBeTruthy();
-      expect(location.searchParams.get('scope')?.split(' ')).toEqual(['read:user', 'repo', 'workflow']);
+      expect(location.searchParams.has('scope')).toBe(false);
       const stateCookie = authorization.cookies.find((cookie) => cookie.name === 'oauth_state');
       expect(stateCookie).toBeTruthy();
 
@@ -87,8 +87,8 @@ describe('dashboard authentication', () => {
         url: '/api/setup',
         cookies: { sdlc_session: session!.value },
       });
-      expect(setup.json()).toMatchObject({ github: true, githubOAuth: true, githubLogin: 'octocat' });
-      expect(await store.secret('github-oauth-token')).not.toContain('oauth-access-token');
+      expect(setup.json()).toMatchObject({ github: false, githubOAuth: true, githubLogin: 'octocat' });
+      expect(await store.secret('github-oauth-token')).toBeUndefined();
     } finally {
       await app.close();
       await store.close();

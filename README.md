@@ -21,7 +21,7 @@ GITHUB_ALLOWED_USERS=comma_separated_github_logins
 GITHUB_ADMIN_USERS=comma_separated_admin_logins
 ```
 
-In a deployed company instance, ActTrident would configure these values in its secret manager. Every developer would then see only the normal **Continue with GitHub** login. Expiring GitHub tokens and refresh-token rotation are handled automatically.
+In a deployed company instance, ActTrident would configure these values in its secret manager. Every developer would then see only the normal **Continue with GitHub** login. Login verifies identity only and does not request repository, organization, or workflow access.
 
 1. Start the dashboard and API in PowerShell:
 
@@ -31,7 +31,7 @@ In a deployed company instance, ActTrident would configure these values in its s
 
    The script creates local machine secrets, installs dependencies, builds the app, and opens `http://localhost:4310`. It never opens GitHub developer settings or asks an end user for OAuth application credentials. Keep this terminal open.
 
-2. Select **Continue with GitHub**. GitHub's consent page signs you into the dashboard and grants repository and workflow access. The returned OAuth credential is encrypted in the server-side store and never enters Codex context.
+2. Select **Continue with GitHub**. GitHub's consent page only identifies the dashboard user. Repository inspection, edits, tests, commits, and pushes use the existing local checkout and Git configuration. Optional pull-request, CI, and deployment API calls reuse the developer's existing Git Credential Manager session; the browser login token is discarded after identity is established.
 
 3. Connect the harness to your existing Codex app and CLI configuration from another PowerShell window:
 

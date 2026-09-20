@@ -434,7 +434,8 @@ export class RunService {
       failure(`Create a feature branch before publishing; ${branch} is the base branch`);
     const failures = completionFailures(run);
     if (failures.length) failure(`Completion gates failed:\n${failures.join('\n')}`);
-    if (!githubConfigured()) failure('GitHub is not connected in the dashboard');
+    if (!(await githubConfigured()))
+      failure('GitHub remote access is unavailable. Sign in with Git Credential Manager before publishing.');
 
     run.candidateSha = candidateSha;
     run.branch = branch;

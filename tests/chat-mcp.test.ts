@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createChatServer } from '../apps/server/src/chat-mcp.js';
@@ -16,6 +16,11 @@ import { repositorySchema, type Repository } from '../shared/types.js';
 
 const runFile = promisify(execFile);
 const cleanup: (() => Promise<unknown>)[] = [];
+
+beforeEach(() => {
+  vi.stubEnv('GITHUB_CLIENT_ID', '');
+  vi.stubEnv('GITHUB_CLIENT_SECRET', '');
+});
 
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();

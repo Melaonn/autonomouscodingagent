@@ -24,16 +24,9 @@ import {
 import { config } from './config.js';
 import type { Store } from './store.js';
 import type { RunService } from './run-service.js';
-import { hash, nonce, endpoint, equalSecret, sealSecret } from './security.js';
+import { hash, nonce, endpoint, equalSecret } from './security.js';
 import { profiles } from './profiles.js';
-import {
-  availableRepositories,
-  githubConfigured,
-  githubOAuthConfigured,
-  oauthUrl,
-  oauthUser,
-  setRepositoryOAuth,
-} from './github.js';
+import { availableRepositories, githubConfigured, githubOAuthConfigured, oauthUrl, oauthUser } from './github.js';
 import { report } from './gates.js';
 import { inspectIntegration } from './mcp.js';
 declare module 'fastify' {
@@ -159,9 +152,6 @@ export async function buildApi(store: Store, runs: RunService) {
     if (!req.cookies.oauth_state || !equalSecret(req.cookies.oauth_state, query.state))
       throw error(400, 'OAuth state rejected');
     const gh = await oauthUser(query.code, oauthCallback);
-    const missingScopes = ['repo', 'workflow'].filter((scope) => !gh.scopes.includes(scope));
-    if (missingScopes.length)
-      throw error(403, `GitHub authorization is missing required access: ${missingScopes.join(', ')}`);
     const allowed = (process.env.GITHUB_ALLOWED_USERS || '')
       .split(',')
       .map((x) => x.trim().toLowerCase())
@@ -171,10 +161,6 @@ export async function buildApi(store: Store, runs: RunService) {
       .split(',')
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
-    const persistCredential = (credential: typeof gh.credential) =>
-      store.setSecret('github-oauth-token', sealSecret(JSON.stringify(credential), config.sessionSecret));
-    await persistCredential(gh.credential);
-    setRepositoryOAuth(gh.credential, persistCredential);
     await store.audit(gh.login, 'github.oauth.connect', { scopes: gh.scopes });
     await setSession(reply, {
       login: gh.login,
@@ -207,7 +193,7 @@ export async function buildApi(store: Store, runs: RunService) {
     requireRole(req, 'viewer');
     return {
       execution: 'native Codex app or CLI',
-      github: githubConfigured(),
+      github: await githubConfigured(),
       database: true,
       deploymentRule: 'explicit approval required',
     };
@@ -215,7 +201,7 @@ export async function buildApi(store: Store, runs: RunService) {
   app.get('/api/setup', async (req) => {
     const actor = requireRole(req, 'admin');
     return {
-      github: githubConfigured(),
+      github: await githubConfigured(),
       githubOAuth: githubOAuthConfigured(),
       githubLogin: actor.login === 'codex-mcp' || actor.login === 'local-operator' ? null : actor.login,
       repositories: (await store.repositories()).length,
@@ -223,7 +209,7 @@ export async function buildApi(store: Store, runs: RunService) {
   });
   app.get('/api/github/repositories', async (req) => {
     requireRole(req, 'admin');
-    if (!githubConfigured()) throw error(409, 'Connect GitHub first');
+    if (!(await githubConfigured())) throw error(409, 'Authenticate Git locally before browsing remote repositories');
     return availableRepositories();
   });
   app.get('/api/profiles', async (req) => {

@@ -1868,19 +1868,20 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
           </div>
           <SetupStatus label="Connected" />
         </section>
-        <section className={`setup-card ${state?.github ? 'complete' : ''}`}>
+        <section className={`setup-card ${state?.githubLogin ? 'complete' : ''}`}>
           <div className="setup-number">2</div>
           <div className="setup-copy">
             <span className="eyebrow">SOURCE CONTROL</span>
-            <h2>GitHub browser authorization</h2>
-            {state?.github ? (
+            <h2>GitHub identity and local Git</h2>
+            {state?.githubLogin ? (
               <p>
-                Signed in{state.githubLogin ? ` as @${state.githubLogin}` : ''}. GitHub supplied the repository
-                credential through OAuth, and the server stores it encrypted.
+                Signed in as @{state.githubLogin}. Browser login only verifies your identity. Repository work uses this
+                checkout and your existing local Git credentials
+                {state.github ? ', which are ready for optional PR and CI automation.' : '.'}
               </p>
             ) : state?.githubOAuth ? (
               <>
-                <p>Authorize repository and workflow access through GitHub's official consent screen.</p>
+                <p>Sign in through GitHub without granting repository, organization, or workflow access.</p>
                 <a className="button primary" href="/auth/github">
                   <Github /> Continue with GitHub
                 </a>
@@ -1892,7 +1893,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
               </p>
             )}
           </div>
-          <div>{state?.github && <SetupStatus label="Connected" />}</div>
+          <div>{state?.githubLogin && <SetupStatus label="Signed in" />}</div>
         </section>
         <section className="setup-card complete">
           <div className="setup-number">3</div>
