@@ -2084,17 +2084,6 @@ textarea::placeholder {
   margin: 0;
   max-width: 640px;
 }
-.setup-copy > .button {
-  margin-top: 12px;
-}
-.setup-copy .setup-detail {
-  margin-top: 10px;
-  line-height: 1.9;
-}
-.setup-detail code {
-  overflow-wrap: anywhere;
-}
-
 .device-login {
   display: flex;
   align-items: center;

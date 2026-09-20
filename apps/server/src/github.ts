@@ -3,12 +3,70 @@ import type { Repository, Run } from '../../../shared/types.js';
 import { readFile } from 'node:fs/promises';
 let cached: { token: string; expires: number } | undefined;
 let configuredToken = '';
+export type RepositoryOAuthCredential = {
+  accessToken: string;
+  expiresAt?: number;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: number;
+};
+let configuredOAuth: RepositoryOAuthCredential | undefined;
+let persistOAuth: ((credential: RepositoryOAuthCredential) => Promise<void>) | undefined;
+let oauthRefreshTask: Promise<string> | undefined;
 export function setRepositoryToken(token: string) {
   configuredToken = token;
+  configuredOAuth = undefined;
+  persistOAuth = undefined;
+  oauthRefreshTask = undefined;
+}
+export function setRepositoryOAuth(
+  credential: RepositoryOAuthCredential,
+  persist?: (credential: RepositoryOAuthCredential) => Promise<void>,
+) {
+  if (!credential.accessToken) throw new Error('Stored GitHub OAuth credential is invalid');
+  configuredToken = '';
+  configuredOAuth = credential;
+  persistOAuth = persist;
+  oauthRefreshTask = undefined;
 }
 const base64url = (value: string | Buffer) => Buffer.from(value).toString('base64url');
+async function oauthAccessToken() {
+  if (!configuredOAuth) throw new Error('GitHub OAuth is not configured');
+  if (!configuredOAuth.expiresAt || configuredOAuth.expiresAt > Date.now() + 60_000) return configuredOAuth.accessToken;
+  if (
+    !configuredOAuth.refreshToken ||
+    (configuredOAuth.refreshTokenExpiresAt && configuredOAuth.refreshTokenExpiresAt <= Date.now())
+  )
+    throw new Error('GitHub authorization expired. Sign in through the dashboard again.');
+  oauthRefreshTask ||= refreshOAuth().finally(() => {
+    oauthRefreshTask = undefined;
+  });
+  return oauthRefreshTask;
+}
+async function refreshOAuth() {
+  if (!configuredOAuth?.refreshToken) throw new Error('GitHub authorization cannot be refreshed');
+  if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET)
+    throw new Error('GitHub OAuth refresh is not configured');
+  const response = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      client_id: process.env.GITHUB_CLIENT_ID,
+      client_secret: process.env.GITHUB_CLIENT_SECRET,
+      grant_type: 'refresh_token',
+      refresh_token: configuredOAuth.refreshToken,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`GitHub OAuth refresh failed (${response.status})`);
+  const auth = (await response.json()) as OAuthTokenResponse;
+  if (!auth.access_token) throw new Error(auth.error_description || 'GitHub OAuth refresh failed');
+  configuredOAuth = credentialFrom(auth);
+  await persistOAuth?.(configuredOAuth);
+  return configuredOAuth.accessToken;
+}
 async function installationToken() {
   if (configuredToken) return configuredToken;
+  if (configuredOAuth) return oauthAccessToken();
   if (!process.env.GITHUB_APP_ID || !process.env.GITHUB_INSTALLATION_ID || !process.env.GITHUB_APP_PRIVATE_KEY_FILE)
     throw new Error('GitHub repository credentials are not configured');
   if (cached && cached.expires > Date.now() + 60_000) return cached.token;
@@ -156,6 +214,25 @@ export async function workflowStatus(repo: Repository, workflow: string, sha: st
     run,
   };
 }
+type OAuthTokenResponse = {
+  access_token?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  refresh_token_expires_in?: number;
+  scope?: string;
+  token_type?: string;
+  error_description?: string;
+};
+function credentialFrom(auth: OAuthTokenResponse): RepositoryOAuthCredential {
+  if (!auth.access_token) throw new Error(auth.error_description || 'OAuth exchange failed');
+  const now = Date.now();
+  return {
+    accessToken: auth.access_token,
+    expiresAt: auth.expires_in ? now + auth.expires_in * 1_000 : undefined,
+    refreshToken: auth.refresh_token,
+    refreshTokenExpiresAt: auth.refresh_token_expires_in ? now + auth.refresh_token_expires_in * 1_000 : undefined,
+  };
+}
 export async function oauthUser(code: string, redirectUri: string) {
   if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET)
     throw new Error('GitHub OAuth is not configured');
@@ -168,22 +245,18 @@ export async function oauthUser(code: string, redirectUri: string) {
       code,
       redirect_uri: redirectUri,
     }),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`GitHub OAuth exchange failed (${response.status})`);
-  const auth = (await response.json()) as {
-    access_token?: string;
-    scope?: string;
-    token_type?: string;
-    error_description?: string;
-  };
-  if (!auth.access_token) throw new Error(auth.error_description || 'OAuth exchange failed');
-  const userResponse = await fetch('https://api.github.com/user', { headers: headers(auth.access_token) });
+  const auth = (await response.json()) as OAuthTokenResponse;
+  const credential = credentialFrom(auth);
+  const userResponse = await fetch('https://api.github.com/user', { headers: headers(credential.accessToken) });
   if (!userResponse.ok) throw new Error('Unable to read GitHub user');
   const user = (await userResponse.json()) as { login?: string };
   if (!user.login) throw new Error('GitHub OAuth did not identify a user');
   return {
     login: user.login,
-    token: auth.access_token,
+    credential,
     scopes: (auth.scope || '')
       .split(',')
       .map((scope) => scope.trim())
@@ -226,6 +299,7 @@ export function githubOAuthConfigured() {
 export function githubConfigured() {
   return !!(
     configuredToken ||
+    configuredOAuth ||
     (process.env.GITHUB_APP_ID && process.env.GITHUB_INSTALLATION_ID && process.env.GITHUB_APP_PRIVATE_KEY_FILE)
   );
 }

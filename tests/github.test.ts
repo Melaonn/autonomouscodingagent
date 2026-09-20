@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  availableRepositories,
   githubOAuthConfigured,
   markReady,
   oauthUrl,
   oauthUser,
+  setRepositoryOAuth,
   setRepositoryToken,
 } from '../apps/server/src/github.js';
 import type { Repository } from '../shared/types.js';
@@ -54,7 +56,7 @@ describe('GitHub browser authorization', () => {
 
     expect(identity).toEqual({
       login: 'octocat',
-      token: 'oauth-access-token',
+      credential: { accessToken: 'oauth-access-token' },
       scopes: ['repo', 'workflow', 'read:user'],
     });
     const exchange = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
@@ -65,6 +67,52 @@ describe('GitHub browser authorization', () => {
       redirect_uri: redirectUri,
     });
     expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ authorization: 'Bearer oauth-access-token' });
+  });
+
+  it('refreshes and persists an expired OAuth credential before repository access', async () => {
+    vi.stubEnv('GITHUB_CLIENT_ID', 'client-id');
+    vi.stubEnv('GITHUB_CLIENT_SECRET', 'client-secret');
+    const persist = vi.fn(async () => undefined);
+    setRepositoryOAuth(
+      {
+        accessToken: 'expired-token',
+        expiresAt: Date.now() - 1,
+        refreshToken: 'refresh-token',
+        refreshTokenExpiresAt: Date.now() + 60_000,
+      },
+      persist,
+    );
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'refreshed-token',
+            expires_in: 28_800,
+            refresh_token: 'next-refresh-token',
+            refresh_token_expires_in: 15_897_600,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(availableRepositories()).resolves.toEqual([]);
+
+    const refresh = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(refresh).toMatchObject({
+      client_id: 'client-id',
+      client_secret: 'client-secret',
+      grant_type: 'refresh_token',
+      refresh_token: 'refresh-token',
+    });
+    expect(fetchMock.mock.calls[1][1]?.headers).toMatchObject({ authorization: 'Bearer refreshed-token' });
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ accessToken: 'refreshed-token', refreshToken: 'next-refresh-token' }),
+    );
   });
 });
 

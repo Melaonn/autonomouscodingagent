@@ -8,13 +8,28 @@ There is no Docker worker, second Codex login, repository clone, or hidden codin
 
 Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub account.
 
+### Application-owner authentication setup
+
+Developers using the harness do not register an OAuth application. The company operating the control plane registers one GitHub OAuth client for the whole installation, just as it would configure GitHub in Firebase, Auth0, or another identity provider. Its client secret belongs in the server environment and is never committed to this public repository.
+
+For this local self-hosted demo, the application owner configures `.env` once with a GitHub OAuth App whose homepage is `http://localhost:4310` and whose callback is `http://localhost:4310/auth/github/callback`:
+
+```dotenv
+GITHUB_CLIENT_ID=application_client_id
+GITHUB_CLIENT_SECRET=application_client_secret
+GITHUB_ALLOWED_USERS=comma_separated_github_logins
+GITHUB_ADMIN_USERS=comma_separated_admin_logins
+```
+
+In a deployed company instance, ActTrident would configure these values in its secret manager. Every developer would then see only the normal **Continue with GitHub** login. Expiring GitHub tokens and refresh-token rotation are handled automatically.
+
 1. Start the dashboard and API in PowerShell:
 
    ```powershell
    .\start.ps1
    ```
 
-   On first use, the script opens GitHub's OAuth App page and shows the exact homepage and callback URLs. Create the app and paste its client ID, client secret, and your GitHub username into the guided prompts. These identify the application; you never create or paste a personal access token. The script then installs dependencies, builds the app, and opens `http://localhost:4310`. Keep this terminal open.
+   The script creates local machine secrets, installs dependencies, builds the app, and opens `http://localhost:4310`. It never opens GitHub developer settings or asks an end user for OAuth application credentials. Keep this terminal open.
 
 2. Select **Continue with GitHub**. GitHub's consent page signs you into the dashboard and grants repository and workflow access. The returned OAuth credential is encrypted in the server-side store and never enters Codex context.
 

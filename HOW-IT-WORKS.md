@@ -49,7 +49,7 @@ Only the dashboard exposes approval. An approved run dispatches the configured G
 - Codex can propose and edit code, but it cannot manufacture passing gate records.
 - The model does not choose verification commands during a run; the versioned repository policy does.
 - Review policy is explicit and auditable. It uses configured globs, change breadth, declared risk, and evidence requirements rather than prompt keyword matching.
-- Browser users authenticate through GitHub OAuth. The OAuth state is bound to an HTTP-only cookie, allowed users are checked before session creation, and the repository credential is encrypted at rest.
+- The application operator configures one installation-wide GitHub OAuth client. Browser users only see the standard GitHub login and consent flow. OAuth state is bound to an HTTP-only cookie, allowed users are checked before session creation, and expiring repository credentials are encrypted and refreshed automatically.
 - MCP calls are restricted to loopback, authenticated with a separate generated local-machine secret, and limited to an explicit API allowlist.
 - GitHub and deployment credentials stay in the server-side secret store and never enter MCP tool results.
 - Deployment approval is unavailable to the Codex MCP tools.

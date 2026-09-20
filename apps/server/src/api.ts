@@ -32,7 +32,7 @@ import {
   githubOAuthConfigured,
   oauthUrl,
   oauthUser,
-  setRepositoryToken,
+  setRepositoryOAuth,
 } from './github.js';
 import { report } from './gates.js';
 import { inspectIntegration } from './mcp.js';
@@ -171,8 +171,10 @@ export async function buildApi(store: Store, runs: RunService) {
       .split(',')
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
-    await store.setSecret('github-oauth-token', sealSecret(gh.token, config.sessionSecret));
-    setRepositoryToken(gh.token);
+    const persistCredential = (credential: typeof gh.credential) =>
+      store.setSecret('github-oauth-token', sealSecret(JSON.stringify(credential), config.sessionSecret));
+    await persistCredential(gh.credential);
+    setRepositoryOAuth(gh.credential, persistCredential);
     await store.audit(gh.login, 'github.oauth.connect', { scopes: gh.scopes });
     await setSession(reply, {
       login: gh.login,
@@ -216,7 +218,6 @@ export async function buildApi(store: Store, runs: RunService) {
       github: githubConfigured(),
       githubOAuth: githubOAuthConfigured(),
       githubLogin: actor.login === 'codex-mcp' || actor.login === 'local-operator' ? null : actor.login,
-      oauthCallback,
       repositories: (await store.repositories()).length,
     };
   });

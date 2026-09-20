@@ -41,7 +41,6 @@ type SetupState = {
   github: boolean;
   githubOAuth: boolean;
   githubLogin: string | null;
-  oauthCallback: string;
   repositories: number;
 };
 type GitHubRepository = {
@@ -161,7 +160,7 @@ function Login({ me }: { me: Me }) {
           </a>
         ) : (
           <div className="notice error">
-            <AlertTriangle /> Configure the GitHub OAuth app before signing in.
+            <AlertTriangle /> GitHub sign-in is unavailable on this instance. Contact the application administrator.
           </div>
         )}
         <p className="fine-print">
@@ -1887,25 +1886,10 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
                 </a>
               </>
             ) : (
-              <>
-                <p>
-                  Create one GitHub OAuth App, then copy its client ID and secret into <code>.env</code>.
-                </p>
-                <p className="setup-detail">
-                  Homepage URL: <code>{window.location.origin}</code>
-                  <br />
-                  Callback URL: <code>{state?.oauthCallback || `${window.location.origin}/auth/github/callback`}</code>
-                </p>
-                <a
-                  className="button quiet"
-                  href="https://github.com/settings/applications/new"
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <Github /> Create GitHub OAuth App
-                </a>
-                <p className="fine-print">Restart the server afterward. No personal access token is required.</p>
-              </>
+              <p>
+                GitHub sign-in has not been enabled by the application administrator. End users never need to create an
+                OAuth application or paste a personal access token.
+              </p>
             )}
           </div>
           <div>{state?.github && <SetupStatus label="Connected" />}</div>

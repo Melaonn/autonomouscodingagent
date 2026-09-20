@@ -21,7 +21,8 @@ test('local operator reaches native Codex and GitHub onboarding', async ({ page 
   await expect(page.getByRole('heading', { name: 'Use your Codex app or CLI' })).toBeVisible();
   await expect(page.getByText('There is no second Codex login')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'GitHub browser authorization' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Create GitHub OAuth App' })).toBeVisible();
+  await expect(page.getByText('End users never need to create an OAuth application')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Create GitHub OAuth App' })).toHaveCount(0);
   await expect(page.getByLabel('GitHub token')).toHaveCount(0);
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Work in progress' })).toBeVisible();
