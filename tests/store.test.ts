@@ -31,6 +31,7 @@ function repo(): Repository {
     requiredCiChecks: [],
     ciWaiver: 'Controlled fixture',
     protectedPaths: [],
+    testEvidence: { requiredForSourceChanges: true, sourcePaths: ['src/**'], testPaths: ['tests/**'] },
     review: { mode: 'always', minimumRisk: 'low', sensitivePaths: [], maxChangedFiles: 8 },
     version: 1,
     createdAt: new Date().toISOString(),

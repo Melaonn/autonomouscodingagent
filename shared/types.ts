@@ -89,6 +89,26 @@ export const reviewPolicySchema = z
     maxChangedFiles: 8,
   });
 
+export const testEvidencePolicySchema = z
+  .object({
+    requiredForSourceChanges: z.boolean().default(true),
+    sourcePaths: z
+      .array(z.string().min(1).max(300))
+      .min(1)
+      .max(100)
+      .default(['src/**', 'app/**', 'apps/**', 'lib/**', 'packages/**/src/**']),
+    testPaths: z
+      .array(z.string().min(1).max(300))
+      .min(1)
+      .max(100)
+      .default(['test/**', 'tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*']),
+  })
+  .default({
+    requiredForSourceChanges: true,
+    sourcePaths: ['src/**', 'app/**', 'apps/**', 'lib/**', 'packages/**/src/**'],
+    testPaths: ['test/**', 'tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*'],
+  });
+
 export const repositorySchema = z
   .object({
     name: z.string().min(1).max(120),
@@ -102,6 +122,7 @@ export const repositorySchema = z
     ciWaiver: z.string().default(''),
     protectedPaths: z.array(z.string()).default(['.github/workflows/', '.sdlc/']),
     review: reviewPolicySchema,
+    testEvidence: testEvidencePolicySchema,
     deployment: deploymentSchema.default({
       enabled: false,
       environment: 'staging',

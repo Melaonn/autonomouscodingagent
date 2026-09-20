@@ -185,6 +185,7 @@ export function createChatServer(api: ChatApi) {
             protectedPaths: created.run.policy.protectedPaths,
             gates: created.run.policy.checks.map(({ id, label, kind }) => ({ id, label, kind })),
             review: created.run.policy.review,
+            testEvidence: created.run.policy.testEvidence,
           },
           context: created.run.context,
         };

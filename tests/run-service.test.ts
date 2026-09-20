@@ -36,6 +36,7 @@ describe('validation-only lifecycle', () => {
       requiredCiChecks: [],
       ciWaiver: 'Validation fixture',
       protectedPaths: [],
+      testEvidence: { requiredForSourceChanges: true, sourcePaths: ['src/**'], testPaths: ['tests/**'] },
       review: { mode: 'risk-based', minimumRisk: 'medium', sensitivePaths: [], maxChangedFiles: 8 },
       version: 1,
       createdAt: new Date().toISOString(),
@@ -175,11 +176,20 @@ describe('validation-only lifecycle', () => {
       },
       'tester',
     );
-    const verified = await service.verify(
+    const missingTests = await service.verify(
       delivery.id,
       digest,
       [{ commandId: 'unit', result: { exitCode: 0, stdout: '', stderr: '', durationMs: 1, files: {} } }],
       ['src/profile.tsx'],
+      'tester',
+    );
+    expect(missingTests.status).toBe('repairing');
+    expect(missingTests.gates.find((gate) => gate.id === 'changed-test-evidence')?.status).toBe('fail');
+    const verified = await service.verify(
+      delivery.id,
+      digest,
+      [{ commandId: 'unit', result: { exitCode: 0, stdout: '', stderr: '', durationMs: 1, files: {} } }],
+      ['src/profile.tsx', 'tests/profile.test.tsx'],
       'tester',
     );
     expect(verified.step).toBe('publish');

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   Design,
+  GateResult,
   JobResult,
   Phase,
   Plan,
@@ -18,6 +19,7 @@ import { createOrUpdatePr, dispatch, githubConfigured, markReady, requiredChecks
 import { callIntegration } from './mcp.js';
 import { hash } from './security.js';
 import { decideNativeReview } from './review-policy.js';
+import { changedTestEvidence } from './test-evidence-policy.js';
 
 const activeStatuses = new Set(['running', 'repairing', 'needs_input', 'needs_review', 'awaiting_approval']);
 const now = () => new Date().toISOString();
@@ -286,6 +288,26 @@ export class RunService {
         `${result.stdout}\n${result.stderr}\n${JSON.stringify(result.files)}`,
       );
       gate.artifactId = artifact.id;
+      run.gates.push(gate);
+    }
+    const testEvidence = changedTestEvidence(run.policy, changedPaths);
+    if (testEvidence.applicable) {
+      const gate: GateResult = {
+        id: 'changed-test-evidence',
+        label: 'changed test evidence',
+        required: true,
+        status: testEvidence.satisfied ? 'pass' : 'fail',
+        candidateDigest,
+        policyVersion: run.policy.version,
+        exitCode: testEvidence.satisfied ? 0 : 1,
+        durationMs: 0,
+        tests: null,
+        findings: testEvidence.satisfied
+          ? []
+          : [
+              `Source changed (${testEvidence.sourceFiles.slice(0, 5).join(', ')}), but no configured test path changed. Add focused regression coverage or change the repository test-evidence policy.`,
+            ],
+      };
       run.gates.push(gate);
     }
 

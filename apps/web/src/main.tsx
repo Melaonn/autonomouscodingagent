@@ -1184,6 +1184,9 @@ function RepositoriesPage() {
     sensitivePaths:
       '.github/workflows/**, **/migrations/**, **/auth/**, **/security/**, **/billing/**, **/payments/**, **/infra/**',
     maxChangedFiles: 8,
+    requireChangedTests: true,
+    sourcePaths: 'src/**, app/**, apps/**, lib/**, packages/**/src/**',
+    testPaths: 'test/**, tests/**, **/__tests__/**, **/*.test.*, **/*.spec.*',
     deploymentEnabled: false,
     healthUrl: '',
     workflow: 'deploy.yml',
@@ -1229,6 +1232,9 @@ function RepositoriesPage() {
       minimumRisk: repository.review?.minimumRisk || 'medium',
       sensitivePaths: (repository.review?.sensitivePaths || []).join(', '),
       maxChangedFiles: repository.review?.maxChangedFiles || 8,
+      requireChangedTests: repository.testEvidence?.requiredForSourceChanges ?? true,
+      sourcePaths: (repository.testEvidence?.sourcePaths || []).join(', '),
+      testPaths: (repository.testEvidence?.testPaths || []).join(', '),
       deploymentEnabled: repository.deployment.enabled,
       healthUrl: repository.deployment.healthUrl,
       workflow: repository.deployment.workflow,
@@ -1263,6 +1269,17 @@ function RepositoriesPage() {
               .map((path) => path.trim())
               .filter(Boolean),
             maxChangedFiles: form.maxChangedFiles,
+          },
+          testEvidence: {
+            requiredForSourceChanges: form.requireChangedTests,
+            sourcePaths: form.sourcePaths
+              .split(',')
+              .map((path) => path.trim())
+              .filter(Boolean),
+            testPaths: form.testPaths
+              .split(',')
+              .map((path) => path.trim())
+              .filter(Boolean),
           },
           protectedPaths: ['.github/workflows/', '.sdlc/'],
           deployment: {
@@ -1471,6 +1488,29 @@ function RepositoriesPage() {
                 placeholder="**/auth/**, **/payments/**"
               />
             </label>
+            <h3>Acceptance test evidence</h3>
+            <label>
+              Source changes require changed tests
+              <select
+                value={form.requireChangedTests ? 'required' : 'optional'}
+                onChange={(e) => setForm({ ...form, requireChangedTests: e.target.value === 'required' })}
+              >
+                <option value="required">Required</option>
+                <option value="optional">Optional</option>
+              </select>
+            </label>
+            {form.requireChangedTests && (
+              <div className="two">
+                <label>
+                  Source path globs
+                  <input value={form.sourcePaths} onChange={(e) => setForm({ ...form, sourcePaths: e.target.value })} />
+                </label>
+                <label>
+                  Test path globs
+                  <input value={form.testPaths} onChange={(e) => setForm({ ...form, testPaths: e.target.value })} />
+                </label>
+              </div>
+            )}
             <details>
               <summary>Advanced quality gates</summary>
               <p className="fine-print">

@@ -44,7 +44,7 @@ The agent-facing path exposes five tools. A normal low-risk delivery uses three 
 2. **Requirements:** Codex creates measurable acceptance criteria and maps testable criteria to configured checks after product questions are resolved in Plan mode.
 3. **Design:** the first `sdlc_verify` call records the accepted plan, requirements, technical design, and declared change risk as one specification checkpoint.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.
-5. **Testing:** `sdlc_verify` runs configured commands locally, reports progress, and binds evidence to the exact Git tree. Independent checks run with bounded concurrency. Codex receives detailed output only for failures, so it can repair without paying to reread successful logs.
+5. **Testing:** `sdlc_verify` runs configured commands locally, reports progress, and binds evidence to the exact Git tree. Independent checks run with bounded concurrency. A configurable changed-test policy prevents source changes from passing only because old tests stayed green. Codex receives detailed output only for failures, so it can repair without paying to reread successful logs.
 6. **Review:** declarative repository policy decides whether native `/review` is required using risk level, sensitive path globs, change breadth, and evidence requirements. Critical or high findings return to repair.
 7. **Delivery:** Codex commits and pushes the verified tree on a feature branch. The control plane creates or updates a pull request and waits for required GitHub checks.
 8. **Deployment and maintenance:** the dashboard asks a human to approve the exact commit and environment. It can dispatch deployment, verify health, roll back a failed release, and monitor the result.
@@ -55,7 +55,7 @@ The agent cannot mark a run complete through prose. Completion comes from record
 
 ## Company integration
 
-Repository policies define commands, review rules, and release rules. Versioned company documents are split into bounded chunks and ranked with PostgreSQL full-text search. Administrator-owned MCP integrations can retrieve context through allowlisted tools. Each run stores the exact policy and context hashes it used.
+Repository policies define commands, source/test path globs, review rules, and release rules. Versioned company documents are split into bounded chunks and ranked with PostgreSQL full-text search. Administrator-owned MCP integrations can retrieve context through allowlisted tools. Each run stores the exact policy and context hashes it used.
 
 This is more useful than pasting a policy into one prompt: the harness selects and versions context, applies mandatory commands after implementation, prevents skipped gates, records evidence, and enforces deployment approval consistently.
 

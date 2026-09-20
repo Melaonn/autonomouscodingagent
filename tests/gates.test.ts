@@ -25,6 +25,7 @@ const policy: Repository = {
   requiredCiChecks: ['ci'],
   ciWaiver: '',
   protectedPaths: ['.github/workflows/'],
+  testEvidence: { requiredForSourceChanges: true, sourcePaths: ['src/**'], testPaths: ['tests/**'] },
   review: { mode: 'always', minimumRisk: 'low', sensitivePaths: [], maxChangedFiles: 8 },
   version: 3,
   createdAt: new Date().toISOString(),
