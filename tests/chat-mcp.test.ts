@@ -115,11 +115,12 @@ describe('Codex chat integration', () => {
       schedule: ['implementation', 'verification'],
       risks: [],
     };
-    const input = { workspaceRoot: project, prompt: 'Add task priorities with validation' };
+    const input = { workspaceRoot: project, prompt: 'Add task priorities with validation', mode: 'validation' };
     const first = await call('sdlc_start', input);
     expect(first.error).toBeFalsy();
     expect(first.data.status).toBe('running');
     expect(first.data.phase).toBe('planning');
+    expect((await store.getRun(first.data.runId))?.mode).toBe('delivery');
     const again = await call('sdlc_start', input);
     expect(again.data.runId).toBe(first.data.runId);
     expect(again.data.reused).toBe(true);

@@ -7,7 +7,6 @@ import {
   designSchema,
   planSchema,
   reviewSchema,
-  runModeSchema,
   type Artifact,
   type Event,
   type Repository,
@@ -143,11 +142,10 @@ export function createChatServer(api: ChatApi) {
       inputSchema: {
         workspaceRoot: z.string().min(1),
         prompt: z.string().min(10).max(100_000),
-        mode: runModeSchema.default('delivery'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ workspaceRoot, prompt, mode }) =>
+    ({ workspaceRoot, prompt }) =>
       protect(async () => {
         const workspace = await inspectWorkspace(workspaceRoot);
         const repositories = await api.request<Repository[]>('/api/repositories');
@@ -166,7 +164,7 @@ export function createChatServer(api: ChatApi) {
         const created = await api.request<{ run: Run; reused: boolean }>('/api/runs', {
           repositoryId: repository.id,
           prompt,
-          mode,
+          mode: 'delivery',
           workspace: {
             branch: workspace.branch,
             headSha: workspace.headSha,

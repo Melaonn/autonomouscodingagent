@@ -49,7 +49,7 @@ The agent-facing path exposes five tools. A normal low-risk delivery uses three 
 7. **Delivery:** Codex commits and pushes the verified tree on a feature branch. The control plane creates or updates a pull request and waits for required GitHub checks.
 8. **Deployment and maintenance:** the dashboard asks a human to approve the exact commit and environment. It can dispatch deployment, verify health, roll back a failed release, and monitor the result.
 
-Explicit validation-only runs stop successfully after verification and review when the workspace is unchanged. They do not create a branch, pull request, or deployment.
+Explicit validation-only runs created through the dashboard or API stop successfully after verification and review when the workspace is unchanged. Codex chat starts delivery runs, avoiding accidental validation mode during feature work. Validation runs do not create a branch, pull request, or deployment.
 
 The agent cannot mark a run complete through prose. Completion comes from recorded checkpoints, matching policy versions and Git tree digests, passing checks, acceptance evidence, and required CI.
 
