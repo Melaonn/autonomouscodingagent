@@ -44,7 +44,7 @@ export class ChatClient {
       /^\/api\/repositories$/,
       /^\/api\/runs$/,
       /^\/api\/runs\/[\w-]+$/,
-      /^\/api\/runs\/[\w-]+\/(plan|requirements|design|progress|verify|review|publish|sync|answer|cancel|resume|report)$/,
+      /^\/api\/runs\/[\w-]+\/(plan|requirements|design|specification|progress|verify|review|publish|sync|answer|cancel|resume|report)$/,
     ];
     if (!allowed.some((pattern) => pattern.test(path))) throw new Error('Unsupported chat operation.');
     if (!this.cookie) {
@@ -67,7 +67,7 @@ export class ChatClient {
       }
       // Never retry mutations automatically: a timed-out start may already exist.
       throw new Error(
-        `Harness request failed (${response.status}). Inspect sdlc_runs before retrying a start; use the dashboard for details.`,
+        `Harness request failed (${response.status}). Inspect sdlc_status when a run ID is available, or use the dashboard for details.`,
       );
     }
     return (path.endsWith('/report') ? response.text() : response.json()) as Promise<T>;

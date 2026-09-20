@@ -32,20 +32,20 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
 
 Codex uses native Plan mode to inspect the repository and ask its normal clarification questions. Choose to implement when the plan is correct. The same conversation then uses the `sdlc` MCP tools and existing checkout. Open the dashboard to see what is happening, what comes next, quality evidence, failures, PR and CI status, and any action that needs you.
 
-After local gates pass, Codex and the dashboard ask you to type `/review` and choose **Review uncommitted changes**. Codex's dedicated reviewer reports prioritized findings without changing the working tree. The control plane records those results, returns blocking findings to implementation, and proceeds only when the verified candidate and acceptance evidence pass.
+After local gates pass, the controller applies the repository's explicit review policy. High-risk, broad, or sensitive-path changes ask you to type `/review` and choose **Review uncommitted changes**. Low-risk changes skip that extra model turn when policy permits.
 
 Plan mode selection and `/review` are native Codex client actions. The harness cannot switch modes or enter slash commands on your behalf. They keep planning questions and review output visible in the existing Codex task rather than launching a hidden agent.
 
-The agent-facing path is intentionally small. A normal delivery uses five control-plane calls: begin the run with the approved plan, submit requirements and design together, verify, record native review, and publish. Coding progress and remote CI are followed automatically, so Codex does not repeatedly call progress, sync, or status tools. Recovery tools remain available when a task is interrupted.
+The agent-facing path exposes five tools. A normal low-risk delivery uses three calls: start during planning, verify after implementation, and publish. A required native review adds one call. The controller records the accepted specification during the first verification, follows progress and CI itself, and keeps successful command output out of the model context.
 
 ## What happens after the prompt
 
-1. **Planning:** native Codex Plan mode inspects the current checkout, asks the developer any necessary questions, and produces the plan. One `sdlc_begin` call starts or resumes the run, records that plan, and returns the relevant company context and configured checks.
-2. **Requirements:** Codex creates measurable acceptance criteria and maps testable criteria to the returned checks. A real product ambiguity pauses for the user.
-3. **Design:** it records architecture, interfaces, data and UI changes, security decisions, compatibility, and test strategy in the same `sdlc_spec` call as requirements.
+1. **Planning:** native Codex Plan mode inspects the checkout and calls `sdlc_start` once. The controller returns bounded company context selected from indexed document chunks. Codex asks normal clarification questions and produces the plan.
+2. **Requirements:** Codex creates measurable acceptance criteria and maps testable criteria to configured checks after product questions are resolved in Plan mode.
+3. **Design:** the first `sdlc_verify` call records the accepted plan, requirements, technical design, and declared change risk as one specification checkpoint.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.
-5. **Testing:** the MCP bridge reports per-gate progress in Codex and the dashboard while running configured commands locally. Build, lint, types, unit, isolated E2E, secret scanning, static security, and dependency results are bound to the exact Git tree digest. Unchanged dependency manifests reuse the verified installation, and independent checks run with bounded concurrency. Failures return the lifecycle to repair.
-6. **Review:** after checks pass, the run waits for native Codex `/review` of the uncommitted changes. Its dedicated findings and acceptance evidence are recorded. Critical or high findings return to repair and require verification and review again.
+5. **Testing:** `sdlc_verify` runs configured commands locally, reports progress, and binds evidence to the exact Git tree. Independent checks run with bounded concurrency. Codex receives detailed output only for failures, so it can repair without paying to reread successful logs.
+6. **Review:** declarative repository policy decides whether native `/review` is required using risk level, sensitive path globs, change breadth, and evidence requirements. Critical or high findings return to repair.
 7. **Delivery:** Codex commits and pushes the verified tree on a feature branch. The control plane creates or updates a pull request and waits for required GitHub checks.
 8. **Deployment and maintenance:** the dashboard asks a human to approve the exact commit and environment. It can dispatch deployment, verify health, roll back a failed release, and monitor the result.
 
@@ -55,7 +55,7 @@ The agent cannot mark a run complete through prose. Completion comes from record
 
 ## Company integration
 
-Repository policies define the commands and release rules that apply every time. Versioned company documents can hold architecture decisions, coding rules, domain constraints, security policies, test conventions, and incident lessons. Administrator-owned MCP integrations can retrieve selected internal context through allowlisted tools. Each run stores the exact policy and context hashes it used.
+Repository policies define commands, review rules, and release rules. Versioned company documents are split into bounded chunks and ranked with PostgreSQL full-text search. Administrator-owned MCP integrations can retrieve context through allowlisted tools. Each run stores the exact policy and context hashes it used.
 
 This is more useful than pasting a policy into one prompt: the harness selects and versions context, applies mandatory commands after implementation, prevents skipped gates, records evidence, and enforces deployment approval consistently.
 

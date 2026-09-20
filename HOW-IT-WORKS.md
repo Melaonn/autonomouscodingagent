@@ -21,15 +21,17 @@ The current Codex conversation is the only coding agent. Native Plan mode handle
 
 ## Lifecycle state machine
 
-The developer starts in native Plan mode, where Codex inspects the repository and asks necessary questions. After the developer accepts the plan and switches to implementation, one `sdlc_begin` call starts or resumes the run from the current commit, records existing modifications, saves the approved plan with `codex-plan-mode` provenance, and returns matching company context and policy. Codex then submits requirements and design together with `sdlc_spec`. Requirements with an unresolved stakeholder decision enter `needs_input`; the answer becomes part of the durable contract.
+The developer starts in native Plan mode. After its initial repository inspection, Codex calls `sdlc_start` once. The controller records the starting tree and returns policy plus bounded company context. Company documents are stored as stable chunks and ranked by PostgreSQL full-text search; the controller does not classify prompts with keyword or regular-expression rules. Codex then uses Plan mode's normal question flow. Product questions must be resolved before implementation begins.
+
+After implementation, the first `sdlc_verify` call records the accepted plan, measurable requirements, technical design, and an explicit change-risk level with its rationale. It then runs every configured quality gate. Repair calls omit the already recorded specification. This collapses lifecycle bookkeeping into the verification checkpoint while preserving the separate evidence shown in the dashboard.
 
 Lifecycle transitions make the current activity visible without asking Codex to send manual progress calls. Verification emits standard MCP progress notifications and durable dashboard events as each gate starts and finishes. It runs configured commands using argument arrays rather than model-generated shell strings. Setup can be reused only when dependency manifests, Node runtime, platform, and architecture match the recorded fingerprint. After setup, independent gates run with a concurrency limit of three. After publication, the server follows required CI on its own; status tools are reserved for recovery and explicit inspection.
 
 The controller parses each result according to its declared format, such as Vitest, Playwright, JUnit, npm audit, pip-audit, Semgrep, or Gitleaks-compatible evidence. The bundled baseline scanners inspect tracked and new candidate source files for high-confidence credentials and dangerous execution or TLS patterns; repository policy can add stronger company scanners. The controller rejects missing commands, empty test runs, malformed reports, failed findings, timeouts, and results tied to an older policy or workspace tree.
 
-A failed gate changes the run to `repairing`. Codex receives the concrete command output in the same conversation, fixes the checkout, and verifies again. Passing gates enter `needs_review`. The developer types `/review` and selects the uncommitted diff; Codex's dedicated reviewer reports prioritized findings without changing the working tree. The harness records the native source, scope, findings, and evidence for every acceptance criterion. Critical or high findings return to repair. The verification attempt limit prevents endless loops while preserving all evidence.
+A failed gate changes the run to `repairing`. Codex receives bounded diagnostics only for failed gates, while complete logs remain stored as evidence. Passing gates are evaluated against a declarative review policy. Review can be mandatory for every change or triggered by the declared risk level, administrator-configured sensitive path globs, changed-file count, or acceptance criteria requiring review evidence. Review decisions do not depend on prompt keywords. When required, the developer types `/review` and selects the uncommitted diff. Critical or high findings return to repair. Otherwise the verified change proceeds directly to publication.
 
-Runs default to delivery mode. Codex may select validation mode only for an explicitly non-mutating audit, smoke test, or verification request. After passing gates and review, a validation run completes only when its Git tree still matches the starting tree; delivery runs continue to branch, pull request, CI, and deployment handling.
+Runs default to delivery mode. Codex may select validation mode only for an explicitly non-mutating audit, smoke test, or verification request. After passing required gates and any policy-required review, a validation run completes only when its Git tree still matches the starting tree; delivery runs continue to branch, pull request, CI, and deployment handling.
 
 The Git tree digest is computed with a temporary Git index. This includes tracked edits, staged edits, deletions, and untracked files without changing the developer's real index. Committing identical content keeps the same tree digest, so the controller can prove that the pushed commit contains the files that passed local verification.
 
@@ -41,6 +43,7 @@ Only the dashboard exposes approval. An approved run dispatches the configured G
 
 - Codex can propose and edit code, but it cannot manufacture passing gate records.
 - The model does not choose verification commands during a run; the versioned repository policy does.
+- Review policy is explicit and auditable. It uses configured globs, change breadth, declared risk, and evidence requirements rather than prompt keyword matching.
 - MCP calls are restricted to loopback and an explicit API allowlist.
 - GitHub and deployment credentials stay in the server-side secret store and never enter MCP tool results.
 - Deployment approval is unavailable to the Codex MCP tools.

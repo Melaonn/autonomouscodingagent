@@ -56,6 +56,39 @@ export const deploymentSchema = z.object({
   monitorIntervalSeconds: z.number().int().min(60).default(300),
 });
 
+export const reviewPolicySchema = z
+  .object({
+    mode: z.enum(['always', 'risk-based']).default('risk-based'),
+    minimumRisk: z.enum(['low', 'medium', 'high']).default('medium'),
+    sensitivePaths: z
+      .array(z.string().min(1).max(300))
+      .max(100)
+      .default([
+        '.github/workflows/**',
+        '**/migrations/**',
+        '**/auth/**',
+        '**/security/**',
+        '**/billing/**',
+        '**/payments/**',
+        '**/infra/**',
+      ]),
+    maxChangedFiles: z.number().int().min(1).max(100).default(8),
+  })
+  .default({
+    mode: 'risk-based',
+    minimumRisk: 'medium',
+    sensitivePaths: [
+      '.github/workflows/**',
+      '**/migrations/**',
+      '**/auth/**',
+      '**/security/**',
+      '**/billing/**',
+      '**/payments/**',
+      '**/infra/**',
+    ],
+    maxChangedFiles: 8,
+  });
+
 export const repositorySchema = z
   .object({
     name: z.string().min(1).max(120),
@@ -63,11 +96,12 @@ export const repositorySchema = z
     repo: z.string().regex(/^[\w.-]+$/),
     branch: z.string().min(1).default('main'),
     stack: z.enum(['typescript', 'python', 'custom']),
-    standards: z.string().max(60000).default(''),
+    standards: z.string().max(8000).default(''),
     checks: z.array(commandSchema).min(1).max(20),
     requiredCiChecks: z.array(z.string()).default([]),
     ciWaiver: z.string().default(''),
     protectedPaths: z.array(z.string()).default(['.github/workflows/', '.sdlc/']),
+    review: reviewPolicySchema,
     deployment: deploymentSchema.default({
       enabled: false,
       environment: 'staging',
@@ -132,6 +166,20 @@ export const designSchema = z.object({
   testStrategy: z.string().min(1),
 });
 export type Design = z.infer<typeof designSchema>;
+
+export const changeRiskSchema = z.object({
+  level: z.enum(['low', 'medium', 'high']),
+  rationale: z.string().min(1).max(2_000),
+});
+export type ChangeRisk = z.infer<typeof changeRiskSchema>;
+
+export const specificationSchema = z.object({
+  plan: planSchema,
+  requirements: contractSchema,
+  design: designSchema,
+  risk: changeRiskSchema,
+});
+export type Specification = z.infer<typeof specificationSchema>;
 
 export const findingSchema = z.object({
   id: z.string(),
@@ -227,8 +275,10 @@ export interface Run {
   contract?: TaskContract;
   plan?: Plan;
   design?: Design;
+  risk?: ChangeRisk;
   gates: GateResult[];
   review?: Review;
+  reviewDecision?: { required: boolean; reasons: string[] };
   question?: string;
   answer?: string;
   blocker?: string;

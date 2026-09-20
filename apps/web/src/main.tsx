@@ -922,11 +922,19 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
                 </>
               ) : (
                 <Empty
-                  title={run.status === 'needs_review' ? 'Native review required' : 'Review pending'}
+                  title={
+                    run.status === 'needs_review'
+                      ? 'Native review required'
+                      : run.reviewDecision && !run.reviewDecision.required
+                        ? 'Review not required'
+                        : 'Review pending'
+                  }
                   text={
                     run.status === 'needs_review'
-                      ? 'Type /review in Codex and choose Review uncommitted changes.'
-                      : 'Codex /review begins after automated gates pass.'
+                      ? `Type /review in Codex and choose Review uncommitted changes. ${run.reviewDecision?.reasons.join(' ') || ''}`
+                      : run.reviewDecision && !run.reviewDecision.required
+                        ? 'Repository policy classified this verified change as low risk.'
+                        : 'Review policy is evaluated after automated gates pass.'
                   }
                   compact
                 />
@@ -1171,6 +1179,11 @@ function RepositoriesPage() {
     standards: '',
     requiredCiChecks: 'ci',
     ciWaiver: '',
+    reviewMode: 'risk-based' as 'always' | 'risk-based',
+    minimumRisk: 'medium' as 'low' | 'medium' | 'high',
+    sensitivePaths:
+      '.github/workflows/**, **/migrations/**, **/auth/**, **/security/**, **/billing/**, **/payments/**, **/infra/**',
+    maxChangedFiles: 8,
     deploymentEnabled: false,
     healthUrl: '',
     workflow: 'deploy.yml',
@@ -1212,6 +1225,10 @@ function RepositoriesPage() {
       standards: repository.standards,
       requiredCiChecks: repository.requiredCiChecks.join(', '),
       ciWaiver: repository.ciWaiver,
+      reviewMode: repository.review?.mode || 'risk-based',
+      minimumRisk: repository.review?.minimumRisk || 'medium',
+      sensitivePaths: (repository.review?.sensitivePaths || []).join(', '),
+      maxChangedFiles: repository.review?.maxChangedFiles || 8,
       deploymentEnabled: repository.deployment.enabled,
       healthUrl: repository.deployment.healthUrl,
       workflow: repository.deployment.workflow,
@@ -1238,6 +1255,15 @@ function RepositoriesPage() {
             .map((x) => x.trim())
             .filter(Boolean),
           ciWaiver: form.ciWaiver,
+          review: {
+            mode: form.reviewMode,
+            minimumRisk: form.minimumRisk,
+            sensitivePaths: form.sensitivePaths
+              .split(',')
+              .map((path) => path.trim())
+              .filter(Boolean),
+            maxChangedFiles: form.maxChangedFiles,
+          },
           protectedPaths: ['.github/workflows/', '.sdlc/'],
           deployment: {
             enabled: form.deploymentEnabled,
@@ -1400,6 +1426,49 @@ function RepositoriesPage() {
                 value={form.standards}
                 onChange={(e) => setForm({ ...form, standards: e.target.value })}
                 placeholder="Optional rules specific to this repository"
+              />
+            </label>
+            <h3>Independent review</h3>
+            <div className="two">
+              <label>
+                Review mode
+                <select
+                  value={form.reviewMode}
+                  onChange={(e) => setForm({ ...form, reviewMode: e.target.value as 'always' | 'risk-based' })}
+                >
+                  <option value="risk-based">Risk based</option>
+                  <option value="always">Every change</option>
+                </select>
+              </label>
+              <label>
+                Review from risk level
+                <select
+                  value={form.minimumRisk}
+                  onChange={(e) => setForm({ ...form, minimumRisk: e.target.value as 'low' | 'medium' | 'high' })}
+                  disabled={form.reviewMode === 'always'}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+              <label>
+                Review when changed files exceed
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={form.maxChangedFiles}
+                  onChange={(e) => setForm({ ...form, maxChangedFiles: Number(e.target.value) })}
+                />
+              </label>
+            </div>
+            <label>
+              Sensitive path globs
+              <input
+                value={form.sensitivePaths}
+                onChange={(e) => setForm({ ...form, sensitivePaths: e.target.value })}
+                placeholder="**/auth/**, **/payments/**"
               />
             </label>
             <details>

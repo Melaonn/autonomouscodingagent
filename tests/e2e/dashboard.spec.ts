@@ -143,6 +143,7 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
     for (let index = 1; index <= 6; index += 1) {
       await post(`/api/runs/${id}/verify`, {
         candidateDigest: 'b'.repeat(40),
+        changedPaths: ['apps/web/src/main.tsx'],
         results: [
           {
             commandId: 'unit',

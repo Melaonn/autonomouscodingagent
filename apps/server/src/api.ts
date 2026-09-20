@@ -13,6 +13,7 @@ import {
   repositorySchema,
   reviewSchema,
   runModeSchema,
+  specificationSchema,
   workspaceStateSchema,
   type Document,
   type Integration,
@@ -223,7 +224,7 @@ export async function buildApi(store: Store, runs: RunService) {
       hash: hash(body.content),
       createdAt: new Date().toISOString(),
     };
-    await store.put('document', doc);
+    await store.putDocument(doc);
     await store.audit(actor.login, 'document.save', { id: doc.id, version: doc.version, hash: doc.hash });
     return { ...doc, content: undefined };
   });
@@ -241,7 +242,10 @@ export async function buildApi(store: Store, runs: RunService) {
         allowedTools: z.array(z.string()),
         enabled: z.boolean(),
         headersEnv: z.record(z.string(), z.string()),
-        contextCalls: z.array(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) })).default([]),
+        contextCalls: z
+          .array(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) }))
+          .max(10)
+          .default([]),
       })
       .parse(req.body);
     for (const call of body.contextCalls)
@@ -295,6 +299,11 @@ export async function buildApi(store: Store, runs: RunService) {
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
     return runs.saveDesign(id, designSchema.parse(req.body), actor.login);
   });
+  app.post('/api/runs/:id/specification', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    return runs.saveSpecification(id, specificationSchema.parse(req.body), actor.login);
+  });
   app.post('/api/runs/:id/progress', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
@@ -318,9 +327,10 @@ export async function buildApi(store: Store, runs: RunService) {
       .object({
         candidateDigest: z.string().regex(/^[0-9a-f]{40}$/),
         results: z.array(z.object({ commandId: z.string(), result: resultSchema })).max(20),
+        changedPaths: z.array(z.string().min(1).max(500)).max(500).default([]),
       })
       .parse(req.body);
-    return runs.verify(id, body.candidateDigest, body.results, actor.login);
+    return runs.verify(id, body.candidateDigest, body.results, body.changedPaths, actor.login);
   });
   app.post('/api/runs/:id/review', async (req) => {
     const actor = requireRole(req, 'operator');

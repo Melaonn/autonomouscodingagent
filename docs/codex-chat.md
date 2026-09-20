@@ -1,21 +1,13 @@
 # Using the harness from Codex
 
-Start the local service with `start.ps1`, connect GitHub and a repository in the dashboard, then register the MCP bridge and user-level Codex instructions once:
+Start the service with `start.ps1`, connect GitHub and a repository in the dashboard, then run `connect-codex.ps1` once. Restart Codex so it loads the local `sdlc` server.
 
-```powershell
-.\connect-codex.ps1
-```
+Open your existing checkout in the Codex app or CLI and enter native Plan mode. Give Codex the same high-level request you normally would. During planning, Codex calls `sdlc_start` once. That call records the starting Git tree and returns repository policy plus a bounded set of company-document excerpts selected by PostgreSQL full-text ranking. Codex continues the normal Plan mode question flow with that context.
 
-The connector updates `~/.codex/config.toml` and a managed block in `~/.codex/AGENTS.md`; it does not edit the project. Restart the Codex app or open a fresh CLI session so it loads the `sdlc` tools. Open the existing project and give a normal request. You do not need to copy policies into the prompt or start work from the dashboard.
+After you accept the plan, Codex edits the same checkout. Focused tests are allowed while coding. Codex does not rerun the repository's entire quality suite because one `sdlc_verify` call performs the configured setup, build, lint, type, unit, integration, E2E, secret, static-analysis, and dependency gates. Independent checks run concurrently where safe. Failed gates return bounded diagnostics to the same conversation; passing output remains in evidence artifacts rather than consuming model context.
 
-Start the task with native Plan mode enabled. Codex inspects the checkout and asks its normal questions there. When the plan is correct, choose to implement it. The same conversation calls `sdlc_begin` once to record the plan and receive company context, then `sdlc_spec` once for requirements and design. It uses the same files and local changes you see. Verification progress is recorded automatically in the dashboard at `http://localhost:4310`, which remains the observer and approval surface.
+Verification evaluates the repository's review policy. An administrator can require review for every change or use an explicit risk policy based on the declared change risk, configured sensitive path globs, changed-file count, and acceptance criteria that require review evidence. The controller does not guess risk from prompt keywords. When review is required, type `/review` and choose **Review uncommitted changes**, then return to implementation so Codex can record the findings. Low-risk changes skip this extra model turn when policy permits.
 
-After every configured local gate passes, the run enters **Native review required**. Type `/review` in the same Codex project and choose **Review uncommitted changes**. By default the dedicated reviewer reports in the current chat without modifying the checkout. Return to the implementation turn after the findings appear so the harness can record them, repair blocking findings, and continue.
+A normal delivery uses `sdlc_start`, `sdlc_verify`, and `sdlc_publish`. Required review adds `sdlc_review`. Failed checks repeat only verification. GitHub CI, deployment, rollback, and health monitoring continue in the control plane without consuming Codex turns. Deployment approval remains a human action in the dashboard.
 
-The MCP bridge cannot turn Plan mode on or invoke `/review`; both are native Codex UI or CLI actions. It also never launches a second Codex process to imitate them.
-
-A normal delivery uses five control-plane calls: `sdlc_begin`, `sdlc_spec`, `sdlc_verify`, `sdlc_review`, and `sdlc_publish`. Failed checks repeat only verification. The server follows GitHub CI automatically, and Codex reads status only when recovering an interrupted task or when you ask for it.
-
-When local checks and review pass, Codex creates a feature branch, commits the verified tree, and pushes it. The control plane follows the pull request and required CI. If a deployment is configured, approve or reject it in the dashboard. Codex cannot approve its own deployment.
-
-Keep `start.ps1` running while using the MCP tools. If the Codex task closes during implementation, reopen the project, ask Codex to resume the SDLC run, and it can find the existing run with `sdlc_runs`. Remote CI, approved deployments, and health monitoring continue in the control plane without an active model conversation.
+The MCP bridge cannot switch Codex modes or invoke slash commands. It does not clone the repository, launch a hidden coding agent, expose credentials, or approve deployment.

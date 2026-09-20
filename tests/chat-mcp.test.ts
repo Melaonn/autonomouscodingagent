@@ -81,12 +81,11 @@ describe('Codex chat integration', () => {
     await client.connect(clientTransport);
 
     const names = (await client.listTools()).tools.map((tool) => tool.name);
-    expect(names).toEqual(
-      expect.arrayContaining(['sdlc_begin', 'sdlc_spec', 'sdlc_verify', 'sdlc_review', 'sdlc_publish']),
-    );
+    expect(names).toEqual(['sdlc_start', 'sdlc_verify', 'sdlc_review', 'sdlc_publish', 'sdlc_status']);
     expect(names).not.toEqual(
       expect.arrayContaining([
-        'sdlc_start',
+        'sdlc_begin',
+        'sdlc_spec',
         'sdlc_plan',
         'sdlc_requirements',
         'sdlc_design',
@@ -116,21 +115,20 @@ describe('Codex chat integration', () => {
       schedule: ['implementation', 'verification'],
       risks: [],
     };
-    const input = { workspaceRoot: project, prompt: 'Add task priorities with validation', plan };
-    const first = await call('sdlc_begin', input);
+    const input = { workspaceRoot: project, prompt: 'Add task priorities with validation' };
+    const first = await call('sdlc_start', input);
     expect(first.error).toBeFalsy();
     expect(first.data.status).toBe('running');
-    expect(first.data.phase).toBe('requirements');
-    expect(first.data.workspace.root).toBe(project);
-    const again = await call('sdlc_begin', input);
-    expect(again.data.id).toBe(first.data.id);
+    expect(first.data.phase).toBe('planning');
+    const again = await call('sdlc_start', input);
+    expect(again.data.runId).toBe(first.data.runId);
     expect(again.data.reused).toBe(true);
     expect(await store.runs()).toHaveLength(1);
-    expect((await call('sdlc_begin', { ...input, prompt: 'Make an unrelated change' })).error).toBe(true);
+    expect((await call('sdlc_start', { ...input, prompt: 'Make an unrelated change' })).error).toBe(true);
 
-    const runId = first.data.id;
-    const specified = await call('sdlc_spec', {
-      runId,
+    const runId = first.data.runId;
+    const specification = {
+      plan,
       requirements: {
         summary: 'Validated task priorities',
         criteria: [
@@ -156,19 +154,19 @@ describe('Codex chat integration', () => {
         compatibility: 'Backward compatible',
         testStrategy: 'Run configured unit gate',
       },
-    });
-    expect(specified.data.phase).toBe('coding');
+      risk: { level: 'high', rationale: 'Changes validation behavior' },
+    };
     const progress: string[] = [];
     const verified = await call(
       'sdlc_verify',
-      { runId, workspaceRoot: project },
+      { runId, workspaceRoot: project, specification },
       { onprogress: (update) => progress.push(update.message || '') },
     );
     expect(verified.data.status).toBe('needs_review');
     expect(verified.data.step).toBe('native-review');
-    expect(verified.data.gates[0].status).toBe('pass');
+    expect(verified.data.verification.passed).toContain('unit');
     expect(progress).toEqual(expect.arrayContaining(['Starting unit', expect.stringContaining('unit passed')]));
-    expect((await call('sdlc_begin', { ...input, prompt: 'Start while native review is pending' })).error).toBe(true);
+    expect((await call('sdlc_start', { ...input, prompt: 'Start while native review is pending' })).error).toBe(true);
     const blockedByNativeReview = await call('sdlc_review', {
       runId,
       review: {
@@ -184,7 +182,6 @@ describe('Codex chat integration', () => {
             criterionId: 'AC-1',
           },
         ],
-        criteria: [{ id: 'AC-1', satisfied: true, evidence: 'unit gate passed' }],
       },
     });
     expect(blockedByNativeReview.data.status).toBe('repairing');
@@ -198,20 +195,17 @@ describe('Codex chat integration', () => {
       review: {
         summary: 'Acceptance evidence is complete',
         findings: [],
-        criteria: [{ id: 'AC-1', satisfied: true, evidence: 'unit gate passed' }],
       },
     });
     expect(reviewed.data.step).toBe('publish');
     expect((await store.artifacts(runId)).some((artifact) => artifact.name === 'native-review.json')).toBe(true);
-    expect((await call('sdlc_cancel', { runId })).data.status).toBe('cancelled');
-    expect((await call('sdlc_runs', {})).data[0].id).toBe(runId);
+    expect((await call('sdlc_status', { runId })).data.runId).toBe(runId);
     await expect(api.request(`/api/runs/${runId}/approval`, {})).rejects.toThrow('Unsupported');
     await mkdir(join(project, '.github', 'workflows'), { recursive: true });
     await writeFile(join(project, '.github', 'workflows', 'release.yml'), 'name: release\n');
-    const protectedStart = await call('sdlc_begin', {
+    const protectedStart = await call('sdlc_start', {
       workspaceRoot: project,
       prompt: 'Change a protected deployment workflow',
-      plan,
     });
     expect(protectedStart.error).toBe(true);
     expect(protectedStart.data.error).toContain('Protected policy path');

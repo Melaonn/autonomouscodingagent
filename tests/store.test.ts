@@ -31,6 +31,7 @@ function repo(): Repository {
     requiredCiChecks: [],
     ciWaiver: 'Controlled fixture',
     protectedPaths: [],
+    review: { mode: 'always', minimumRisk: 'low', sensitivePaths: [], maxChangedFiles: 8 },
     version: 1,
     createdAt: new Date().toISOString(),
     deployment: {
@@ -96,7 +97,7 @@ describe('durable store', () => {
   it('versions and finds company knowledge', async () => {
     const store = await Store.open();
     stores.push(store);
-    await store.put('document', {
+    await store.putDocument({
       id: 'doc',
       title: 'Tenant security',
       source: 'policy',
@@ -108,5 +109,7 @@ describe('durable store', () => {
     });
     const documents = await store.searchDocuments('add tenant isolation to customer API');
     expect(documents[0]?.id).toBe('doc');
+    expect(documents[0]?.excerpt).toContain('tenant');
+    expect(documents[0]?.excerpt).toContain('isolation');
   });
 });

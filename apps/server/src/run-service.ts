@@ -8,6 +8,7 @@ import type {
   Review,
   Run,
   RunMode,
+  Specification,
   TaskContract,
   WorkspaceState,
 } from '../../../shared/types.js';
@@ -16,6 +17,7 @@ import { approvalDigest, completionFailures, evaluate, report } from './gates.js
 import { createOrUpdatePr, dispatch, githubConfigured, markReady, requiredChecks, workflowStatus } from './github.js';
 import { callIntegration } from './mcp.js';
 import { hash } from './security.js';
+import { decideNativeReview } from './review-policy.js';
 
 const activeStatuses = new Set(['running', 'repairing', 'needs_input', 'needs_review', 'awaiting_approval']);
 const now = () => new Date().toISOString();
@@ -87,16 +89,12 @@ export class RunService {
       failure(`Repository already has active run ${existing.id}`);
     }
 
-    const documents = await this.store.searchDocuments(prompt);
-    const context = documents.map((document) => ({
-      id: document.id,
-      title: document.title,
-      version: document.version,
-      hash: document.hash,
-      excerpt: document.content.slice(0, 4_000),
-    }));
-    for (const integration of (await this.store.integrations()).filter((item) => item.enabled)) {
-      for (const call of integration.contextCalls) {
+    const context = await this.store.searchDocuments(prompt);
+    const integrationCalls = (await this.store.integrations())
+      .filter((item) => item.enabled)
+      .flatMap((integration) => integration.contextCalls.map((call) => ({ integration, call })));
+    const integrationResults = await Promise.all(
+      integrationCalls.map(async ({ integration, call }) => {
         const args = template(call.arguments, prompt, repository) as Record<string, unknown>;
         const result = await callIntegration(integration, call.tool, args).catch((error) =>
           failure(
@@ -104,15 +102,20 @@ export class RunService {
             502,
           ),
         );
-        const excerpt = JSON.stringify(result).slice(0, 4_000);
-        context.push({
+        return {
           id: `${integration.id}:${call.tool}`,
           title: `${integration.name} / ${call.tool}`,
           version: 1,
-          hash: hash(excerpt),
-          excerpt,
-        });
-      }
+          content: JSON.stringify(result),
+        };
+      }),
+    );
+    let remainingContext = Math.max(0, 6_000 - context.reduce((total, item) => total + item.excerpt.length, 0));
+    for (const result of integrationResults) {
+      if (remainingContext <= 0 || context.length >= 6) break;
+      const excerpt = result.content.slice(0, Math.min(1_500, remainingContext));
+      remainingContext -= excerpt.length;
+      context.push({ ...result, hash: hash(excerpt), excerpt });
     }
 
     const createdAt = now();
@@ -162,15 +165,7 @@ export class RunService {
     const run = await this.requireRun(id);
     this.requireActive(run);
     if (!run.plan || run.phase !== 'requirements') failure('Requirements checkpoint is out of order');
-    const checks = new Set(run.policy.checks.map((check) => check.id));
-    for (const criterion of contract.criteria) {
-      if (criterion.evidence === 'test' && !criterion.checkIds.length)
-        failure(`${criterion.id} requires at least one configured check`);
-      const unknown = criterion.checkIds.filter((check) => !checks.has(check));
-      if (unknown.length) failure(`${criterion.id} references unknown checks: ${unknown.join(', ')}`);
-    }
-    if (contract.criteria.some((criterion) => criterion.evidence === 'human') && !contract.clarification)
-      failure('Human acceptance evidence requires a specific stakeholder clarification question');
+    this.validateRequirements(run, contract);
     run.contract = contract;
     await this.store.artifact(run, 'requirements.json', JSON.stringify(contract, null, 2));
     if (contract.clarification) {
@@ -181,6 +176,41 @@ export class RunService {
     run.phase = 'design';
     run.step = 'blueprint';
     return this.record(run, actor, 'run.requirements', 'stage', 'Requirements checkpoint accepted');
+  }
+
+  private validateRequirements(run: Run, contract: TaskContract) {
+    const checks = new Set(run.policy.checks.map((check) => check.id));
+    for (const criterion of contract.criteria) {
+      if (criterion.evidence === 'test' && !criterion.checkIds.length)
+        failure(`${criterion.id} requires at least one configured check`);
+      const unknown = criterion.checkIds.filter((check) => !checks.has(check));
+      if (unknown.length) failure(`${criterion.id} references unknown checks: ${unknown.join(', ')}`);
+    }
+    if (contract.criteria.some((criterion) => criterion.evidence === 'human') && !contract.clarification)
+      failure('Human acceptance evidence requires a specific stakeholder clarification question');
+  }
+
+  async saveSpecification(id: string, specification: Specification, actor: string) {
+    const run = await this.requireRun(id);
+    this.requireActive(run);
+    if (run.phase !== 'planning') failure('Specification checkpoint is out of order');
+    this.validateRequirements(run, specification.requirements);
+    if (specification.requirements.clarification)
+      failure('Resolve stakeholder questions in native Plan mode before starting implementation');
+
+    run.plan = specification.plan;
+    run.contract = specification.requirements;
+    run.design = specification.design;
+    run.risk = specification.risk;
+    run.phase = 'coding';
+    run.step = 'implementation';
+    await Promise.all([
+      this.store.artifact(run, 'plan.json', JSON.stringify(specification.plan, null, 2)),
+      this.store.artifact(run, 'requirements.json', JSON.stringify(specification.requirements, null, 2)),
+      this.store.artifact(run, 'design.json', JSON.stringify(specification.design, null, 2)),
+      this.store.artifact(run, 'risk.json', JSON.stringify(specification.risk, null, 2)),
+    ]);
+    return this.record(run, actor, 'run.specification', 'stage', 'Approved specification recorded');
   }
 
   async answer(id: string, answer: string, actor: string) {
@@ -220,6 +250,7 @@ export class RunService {
     id: string,
     candidateDigest: string,
     results: { commandId: string; result: JobResult }[],
+    changedPaths: string[],
     actor: string,
   ) {
     const run = await this.requireRun(id);
@@ -275,11 +306,40 @@ export class RunService {
       });
     }
 
-    run.status = 'needs_review';
-    run.step = 'native-review';
     run.blocker = undefined;
     run.lastFailureSignature = undefined;
     run.repeatedFailures = 0;
+    run.reviewDecision = decideNativeReview(run, changedPaths);
+    if (!run.reviewDecision.required) {
+      if (run.mode === 'validation') {
+        if (run.candidateDigest !== run.workspace.digest)
+          failure('Validation-only runs must leave the workspace unchanged; start a delivery run for code changes');
+        run.status = 'completed';
+        run.phase = 'maintenance';
+        run.step = 'validated';
+        return this.record(
+          run,
+          actor,
+          'run.verify',
+          'validation-completed',
+          'Configured verification passed; native review was not required by policy',
+          { digest: candidateDigest, reviewRequired: false },
+        );
+      }
+      run.status = 'running';
+      run.phase = 'deployment';
+      run.step = 'publish';
+      return this.record(
+        run,
+        actor,
+        'run.verify',
+        'verification-passed',
+        'Configured verification passed; native review was not required by policy',
+        { digest: candidateDigest, reviewRequired: false },
+      );
+    }
+    run.status = 'needs_review';
+    run.step = 'native-review';
     return this.record(
       run,
       actor,
@@ -288,6 +348,8 @@ export class RunService {
       'All configured checks passed; Codex native review required',
       {
         digest: candidateDigest,
+        reviewRequired: true,
+        reasons: run.reviewDecision.reasons,
       },
     );
   }
