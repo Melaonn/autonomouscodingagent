@@ -69,6 +69,8 @@ npm run evaluate -- --input evals/experiment.json --out evals/results/company-pi
 
 The evaluator reports paired quality confidence, critical regressions, total and uncached token ratios, interventions, repairs, and fairness failures. It returns a positive verdict only for statistically supported quality improvement, or for non-inferior quality with the configured token reduction. See [evals/README.md](evals/README.md) for the protocol. Until representative paired trials pass that policy, performance improvement remains unproven.
 
+The first real five-task run is published as [an inconclusive pilot](evals/results/pilot-2026-09-20.md). It found that native review caught a duplicate-ID defect missed by configured gates, while the full harness tied baseline quality and consumed more measured time and tokens. The project therefore makes no performance-benefit claim yet.
+
 ## Development
 
 ```powershell

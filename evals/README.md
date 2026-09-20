@@ -14,7 +14,7 @@ For every task:
 4. In the **baseline**, ask Codex to implement and manually perform the full SDLC without this MCP.
 5. In the **harness** variant, use the normal governed workflow.
 6. Keep acceptance and held-out regression commands away from both agents. Run them only with the evaluator.
-7. Capture Codex JSONL so token use comes from `turn.completed.usage`, rather than an estimate.
+7. Capture Codex JSONL so token use comes from `turn.completed.usage`, rather than an estimate. The evaluator flags active turns that report zero usage and will not accept them as efficiency evidence.
 8. Record wall time, human interventions, repair iterations, and lifecycle stages completed.
 
 Use `codex exec --json` when collecting a controlled CLI trial. Its JSONL stream contains exact input, cached-input, output, and reasoning-output token counts. If the harness trial spans implementation, native review, and a repair turn, append all of their JSONL events to the same variant log.

@@ -24,7 +24,7 @@ export const profiles: Record<string, CheckCommand[]> = {
     check(
       'unit',
       'unit',
-      ['npm', 'test', '--', '--reporter=json', '--outputFile=.reports/unit.json'],
+      ['npm', 'exec', '--', 'vitest', 'run', '--reporter=json', '--outputFile=.reports/unit.json'],
       'vitest',
       '.reports/unit.json',
     ),

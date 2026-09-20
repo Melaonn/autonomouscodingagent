@@ -296,7 +296,14 @@ export function createChatServer(api: ChatApi) {
         return {
           ...summary(run),
           workspaceChangedDuringChecks: false,
-          gates: run.gates,
+          gates: run.gates.map(({ id, status, durationMs, tests, findings, cached }) => ({
+            id,
+            status,
+            durationMs,
+            tests,
+            findings,
+            cached: cached || undefined,
+          })),
         };
       }),
   );

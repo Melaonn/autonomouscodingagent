@@ -42,6 +42,7 @@ function variant(qualityScore: number, totalTokens: number): VariantMeasurement 
       uncachedTokens: totalTokens,
       mcpToolCalls: 0,
       commandExecutions: 1,
+      unmeteredTurns: 0,
     },
     wallTimeMs: 100,
     humanInterventions: 0,
@@ -121,7 +122,25 @@ describe('paired harness evaluation', () => {
       uncachedTokens: 60,
       mcpToolCalls: 1,
       commandExecutions: 1,
+      unmeteredTurns: 0,
     });
+  });
+
+  it('marks an active Codex turn with zero reported usage as unmetered', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sdlc-eval-'));
+    cleanup.push(root);
+    const log = join(root, 'review.jsonl');
+    await writeFile(
+      log,
+      [
+        JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Found a defect' } }),
+        JSON.stringify({
+          type: 'turn.completed',
+          usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 },
+        }),
+      ].join('\n'),
+    );
+    await expect(readCodexUsage(log)).resolves.toMatchObject({ unmeteredTurns: 1 });
   });
 
   it('allows a quality benefit even when the harness costs more tokens', () => {
@@ -146,6 +165,15 @@ describe('paired harness evaluation', () => {
     const report = buildEvaluationReport(experiment(5), trials(5, 1, 1, 0.8));
     expect(report.verdict).toBe('beneficial');
     expect(report.claim).toContain('token usage');
+  });
+
+  it('does not claim efficiency when an active turn has no usage measurement', () => {
+    const measured = trials(5, 1, 1, 0.8);
+    measured[0].harness.usage!.unmeteredTurns = 1;
+    const report = buildEvaluationReport(experiment(5), measured);
+    expect(report.verdict).toBe('inconclusive');
+    expect(report.usage.complete).toBe(false);
+    expect(report.limitations.some((limitation) => limitation.includes('lower bounds'))).toBe(true);
   });
 
   it('refuses to claim a benefit from too few trials', () => {

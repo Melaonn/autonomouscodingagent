@@ -61,6 +61,7 @@ export interface CodexUsage {
   uncachedTokens: number;
   mcpToolCalls: number;
   commandExecutions: number;
+  unmeteredTurns: number;
 }
 
 export interface CheckMeasurement {
@@ -123,6 +124,8 @@ export interface EvaluationReport {
   };
   usage: {
     complete: boolean;
+    baselineComplete: boolean;
+    harnessComplete: boolean;
     baselineTotalTokens?: number;
     harnessTotalTokens?: number;
     totalTokenRatio?: number;
@@ -133,6 +136,8 @@ export interface EvaluationReport {
     harnessMcpToolCalls?: number;
     baselineCommandExecutions?: number;
     harnessCommandExecutions?: number;
+    baselineUnmeteredTurns?: number;
+    harnessUnmeteredTurns?: number;
   };
   process: {
     baselineWallTimeMs?: number;
@@ -160,8 +165,10 @@ export async function readCodexUsage(path?: string): Promise<CodexUsage | undefi
     uncachedTokens: 0,
     mcpToolCalls: 0,
     commandExecutions: 0,
+    unmeteredTurns: 0,
   };
   let completedTurns = 0;
+  let turnHadActivity = false;
   for (const line of content.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let event: Record<string, unknown>;
@@ -172,13 +179,21 @@ export async function readCodexUsage(path?: string): Promise<CodexUsage | undefi
     }
     if (event.type === 'turn.completed' && event.usage && typeof event.usage === 'object') {
       const turn = event.usage as Record<string, unknown>;
-      usage.inputTokens += number(turn.input_tokens);
-      usage.cachedInputTokens += number(turn.cached_input_tokens);
-      usage.outputTokens += number(turn.output_tokens);
-      usage.reasoningOutputTokens += number(turn.reasoning_output_tokens);
+      const inputTokens = number(turn.input_tokens);
+      const cachedInputTokens = number(turn.cached_input_tokens);
+      const outputTokens = number(turn.output_tokens);
+      const reasoningOutputTokens = number(turn.reasoning_output_tokens);
+      usage.inputTokens += inputTokens;
+      usage.cachedInputTokens += cachedInputTokens;
+      usage.outputTokens += outputTokens;
+      usage.reasoningOutputTokens += reasoningOutputTokens;
+      if (turnHadActivity && inputTokens + cachedInputTokens + outputTokens + reasoningOutputTokens === 0)
+        usage.unmeteredTurns += 1;
       completedTurns += 1;
+      turnHadActivity = false;
     }
     if (event.type !== 'item.completed' || !event.item || typeof event.item !== 'object') continue;
+    turnHadActivity = true;
     const itemType = (event.item as Record<string, unknown>).type;
     if (itemType === 'mcp_tool_call') usage.mcpToolCalls += 1;
     if (itemType === 'command_execution') usage.commandExecutions += 1;
@@ -236,17 +251,24 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
       )
       .map((check) => `${trial.id}/${check.id}`),
   );
-  const usageComplete = valid.length > 0 && valid.every((trial) => trial.baseline.usage && trial.harness.usage);
-  const baselineTotalTokens = usageComplete
+  const baselineUsageAvailable = valid.length > 0 && valid.every((trial) => trial.baseline.usage);
+  const harnessUsageAvailable = valid.length > 0 && valid.every((trial) => trial.harness.usage);
+  const usageAvailable = baselineUsageAvailable && harnessUsageAvailable;
+  const baselineUsageComplete =
+    baselineUsageAvailable && valid.every((trial) => trial.baseline.usage!.unmeteredTurns === 0);
+  const harnessUsageComplete =
+    harnessUsageAvailable && valid.every((trial) => trial.harness.usage!.unmeteredTurns === 0);
+  const usageComplete = baselineUsageComplete && harnessUsageComplete;
+  const baselineTotalTokens = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.baseline.usage!.totalTokens, 0)
     : undefined;
-  const harnessTotalTokens = usageComplete
+  const harnessTotalTokens = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.harness.usage!.totalTokens, 0)
     : undefined;
-  const baselineUncachedTokens = usageComplete
+  const baselineUncachedTokens = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.baseline.usage!.uncachedTokens, 0)
     : undefined;
-  const harnessUncachedTokens = usageComplete
+  const harnessUncachedTokens = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.harness.usage!.uncachedTokens, 0)
     : undefined;
   const totalTokenRatio =
@@ -257,17 +279,23 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
     baselineUncachedTokens === undefined || harnessUncachedTokens === undefined
       ? undefined
       : ratio(harnessUncachedTokens, baselineUncachedTokens);
-  const baselineMcpToolCalls = usageComplete
+  const baselineMcpToolCalls = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.baseline.usage!.mcpToolCalls, 0)
     : undefined;
-  const harnessMcpToolCalls = usageComplete
+  const harnessMcpToolCalls = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.harness.usage!.mcpToolCalls, 0)
     : undefined;
-  const baselineCommandExecutions = usageComplete
+  const baselineCommandExecutions = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.baseline.usage!.commandExecutions, 0)
     : undefined;
-  const harnessCommandExecutions = usageComplete
+  const harnessCommandExecutions = usageAvailable
     ? valid.reduce((sum, trial) => sum + trial.harness.usage!.commandExecutions, 0)
+    : undefined;
+  const baselineUnmeteredTurns = usageAvailable
+    ? valid.reduce((sum, trial) => sum + trial.baseline.usage!.unmeteredTurns, 0)
+    : undefined;
+  const harnessUnmeteredTurns = usageAvailable
+    ? valid.reduce((sum, trial) => sum + trial.harness.usage!.unmeteredTurns, 0)
     : undefined;
   const wallTimeComplete =
     valid.length > 0 &&
@@ -283,6 +311,7 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
   const efficientAndNonInferior =
     enoughTrials &&
     confidence[0] >= -experiment.thresholds.qualityNonInferiority &&
+    usageComplete &&
     totalTokenRatio !== undefined &&
     totalTokenRatio <= 1 - experiment.thresholds.tokenReductionTarget &&
     !criticalRegressions.length;
@@ -299,8 +328,8 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
     claim = 'The harness regressed quality on the paired benchmark and must not be presented as beneficial.';
   } else if (qualityProven) {
     verdict = 'beneficial';
-    if (totalTokenRatio === undefined) {
-      claim = 'The harness produced a statistically supported quality improvement; token cost is unavailable.';
+    if (!usageComplete || totalTokenRatio === undefined) {
+      claim = 'The harness produced a statistically supported quality improvement; complete token cost is unavailable.';
     } else if (totalTokenRatio > 1) {
       claim = 'The harness produced a statistically supported quality improvement, with a measured token cost.';
     } else {
@@ -318,8 +347,12 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
     limitations.push(
       `Only ${valid.length} valid paired ${valid.length === 1 ? 'trial is' : 'trials are'} available; ${experiment.thresholds.minimumPairedTrials} are required.`,
     );
-  if (!usageComplete)
+  if (!usageAvailable)
     limitations.push('Codex JSONL usage is missing for one or more variants; efficiency is unproven.');
+  else if (!usageComplete)
+    limitations.push(
+      'Codex reported zero usage for one or more active turns; token totals are lower bounds and efficiency is unproven.',
+    );
   if (!wallTimeComplete) limitations.push('Wall time is missing for one or more variants; speed is unproven.');
   if (valid.some((trial) => trial.baseline.lifecycleStages.length === 0 || trial.harness.lifecycleStages.length === 0))
     limitations.push('Lifecycle completion was not recorded for one or more variants.');
@@ -347,6 +380,8 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
     },
     usage: {
       complete: usageComplete,
+      baselineComplete: baselineUsageComplete,
+      harnessComplete: harnessUsageComplete,
       baselineTotalTokens,
       harnessTotalTokens,
       totalTokenRatio,
@@ -357,6 +392,8 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
       harnessMcpToolCalls,
       baselineCommandExecutions,
       harnessCommandExecutions,
+      baselineUnmeteredTurns,
+      harnessUnmeteredTurns,
     },
     process: {
       baselineWallTimeMs,
@@ -396,5 +433,5 @@ export function markdownReport(report: EvaluationReport) {
   const failures = failureRows.length
     ? `| Trial | Variant | Check | Kind | Severity | Evidence |\n| --- | --- | --- | --- | --- | --- |\n${failureRows.join('\n')}`
     : 'No failed checks.';
-  return `# ${report.name}\n\n**Verdict: ${report.verdict.toUpperCase()}**\n\n${report.claim}\n\n- Harness revision: ${report.harnessRevision}\n- Policy revision: ${report.policyRevision}\n\n## Quality\n\n| Metric | Baseline | Harness |\n| --- | ---: | ---: |\n| Mean held-out quality | ${percent(report.quality.baselineMean)} | ${percent(report.quality.harnessMean)} |\n| Paired wins / ties / losses | - | ${report.quality.wins} / ${report.quality.ties} / ${report.quality.losses} |\n| Mean quality delta | - | ${report.quality.meanDelta >= 0 ? '+' : ''}${percent(report.quality.meanDelta)} |\n| 95% confidence interval | - | ${percent(report.quality.confidence95[0])} to ${percent(report.quality.confidence95[1])} |\n| Critical regressions | - | ${report.quality.criticalRegressions.length} |\n\n## Usage and effort\n\n| Metric | Baseline | Harness | Ratio |\n| --- | ---: | ---: | ---: |\n| Total tokens | ${report.usage.baselineTotalTokens ?? 'unavailable'} | ${report.usage.harnessTotalTokens ?? 'unavailable'} | ${tokenRatio(report.usage.totalTokenRatio)} |\n| Uncached tokens | ${report.usage.baselineUncachedTokens ?? 'unavailable'} | ${report.usage.harnessUncachedTokens ?? 'unavailable'} | ${tokenRatio(report.usage.uncachedTokenRatio)} |\n| MCP tool calls | ${report.usage.baselineMcpToolCalls ?? 'unavailable'} | ${report.usage.harnessMcpToolCalls ?? 'unavailable'} | - |\n| Command executions | ${report.usage.baselineCommandExecutions ?? 'unavailable'} | ${report.usage.harnessCommandExecutions ?? 'unavailable'} | - |\n| Wall time | ${duration(report.process.baselineWallTimeMs)} | ${duration(report.process.harnessWallTimeMs)} | - |\n| Human interventions | ${report.process.baselineInterventions} | ${report.process.harnessInterventions} | - |\n| Repair iterations | ${report.process.baselineRepairIterations} | ${report.process.harnessRepairIterations} | - |\n\n## Paired trials\n\n| Trial | Model / effort | Fairness | Baseline quality | Harness quality | Delta | Token ratio |\n| --- | --- | --- | ---: | ---: | ---: | ---: |\n${trialRows}\n\n## Failed checks\n\n${failures}\n\n## Limitations\n\n${report.limitations.length ? report.limitations.map((item) => `- ${item}`).join('\n') : '- None recorded.'}\n`;
+  return `# ${report.name}\n\n**Verdict: ${report.verdict.toUpperCase()}**\n\n${report.claim}\n\n- Harness revision: ${report.harnessRevision}\n- Policy revision: ${report.policyRevision}\n\n## Quality\n\n| Metric | Baseline | Harness |\n| --- | ---: | ---: |\n| Mean held-out quality | ${percent(report.quality.baselineMean)} | ${percent(report.quality.harnessMean)} |\n| Paired wins / ties / losses | - | ${report.quality.wins} / ${report.quality.ties} / ${report.quality.losses} |\n| Mean quality delta | - | ${report.quality.meanDelta >= 0 ? '+' : ''}${percent(report.quality.meanDelta)} |\n| 95% confidence interval | - | ${percent(report.quality.confidence95[0])} to ${percent(report.quality.confidence95[1])} |\n| Critical regressions | - | ${report.quality.criticalRegressions.length} |\n\n## Usage and effort\n\n| Metric | Baseline | Harness | Ratio |\n| --- | ---: | ---: | ---: |\n| Usage measurement complete | ${report.usage.baselineComplete ? 'yes' : 'no'} | ${report.usage.harnessComplete ? 'yes' : 'no'} | - |\n| Total tokens | ${report.usage.baselineTotalTokens ?? 'unavailable'} | ${report.usage.harnessTotalTokens ?? 'unavailable'} | ${tokenRatio(report.usage.totalTokenRatio)} |\n| Uncached tokens | ${report.usage.baselineUncachedTokens ?? 'unavailable'} | ${report.usage.harnessUncachedTokens ?? 'unavailable'} | ${tokenRatio(report.usage.uncachedTokenRatio)} |\n| Unmetered active turns | ${report.usage.baselineUnmeteredTurns ?? 'unavailable'} | ${report.usage.harnessUnmeteredTurns ?? 'unavailable'} | - |\n| MCP tool calls | ${report.usage.baselineMcpToolCalls ?? 'unavailable'} | ${report.usage.harnessMcpToolCalls ?? 'unavailable'} | - |\n| Command executions | ${report.usage.baselineCommandExecutions ?? 'unavailable'} | ${report.usage.harnessCommandExecutions ?? 'unavailable'} | - |\n| Wall time | ${duration(report.process.baselineWallTimeMs)} | ${duration(report.process.harnessWallTimeMs)} | - |\n| Human interventions | ${report.process.baselineInterventions} | ${report.process.harnessInterventions} | - |\n| Repair iterations | ${report.process.baselineRepairIterations} | ${report.process.harnessRepairIterations} | - |\n\n## Paired trials\n\n| Trial | Model / effort | Fairness | Baseline quality | Harness quality | Delta | Token ratio |\n| --- | --- | --- | ---: | ---: | ---: | ---: |\n${trialRows}\n\n## Failed checks\n\n${failures}\n\n## Limitations\n\n${report.limitations.length ? report.limitations.map((item) => `- ${item}`).join('\n') : '- None recorded.'}\n`;
 }
