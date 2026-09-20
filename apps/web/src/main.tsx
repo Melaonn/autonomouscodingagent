@@ -34,7 +34,7 @@ import './styles.css';
 type Me = { user: User | null; csrf: string; githubOAuth: boolean };
 type RunBundle = {
   run: Run;
-  events: { id: number; time: string; kind: string; message: string }[];
+  events: { id: number; time: string; kind: string; message: string; phase: Run['phase'] }[];
   artifacts: { id: string; name: string; hash: string; createdAt: string }[];
 };
 type SetupState = { github: boolean; repositories: number };
@@ -379,6 +379,52 @@ function DetailList({ title, items }: { title: string; items?: string[] }) {
   );
 }
 
+function lifecyclePhaseState(run: Run, phase: Run['phase']) {
+  const phaseIndex = seven.indexOf(phase);
+  const currentIndex = seven.indexOf(run.phase);
+  if (phaseIndex < currentIndex) return { className: 'complete', label: 'Complete' };
+  if (phaseIndex > currentIndex) return { className: 'upcoming', label: 'Pending' };
+  if (['completed', 'monitoring'].includes(run.status)) return { className: 'complete', label: 'Complete' };
+  if (['blocked', 'failed', 'cancelled'].includes(run.status))
+    return { className: 'attention', label: 'Needs attention' };
+  return { className: 'current', label: 'Current phase' };
+}
+
+function PhaseSection({
+  number,
+  phase,
+  title,
+  description,
+  icon: Icon,
+  run,
+  children,
+}: {
+  number: number;
+  phase: Run['phase'];
+  title: string;
+  description: string;
+  icon: React.ComponentType<{ size?: number }>;
+  run: Run;
+  children: React.ReactNode;
+}) {
+  const state = lifecyclePhaseState(run, phase);
+  return (
+    <section id={`phase-${phase}`} className={`panel phase-section run-section-anchor ${state.className}`}>
+      <header className="phase-section-head">
+        <span className="phase-number">{number}</span>
+        <div>
+          <p>SDLC PHASE {number} OF 7</p>
+          <h2>{title}</h2>
+          <span>{description}</span>
+        </div>
+        <Icon size={18} />
+        <strong className="phase-state">{state.label}</strong>
+      </header>
+      <div className="phase-section-body">{children}</div>
+    </section>
+  );
+}
+
 function RunDetail({ id, back }: { id: string; back: () => void }) {
   const [bundle, setBundle] = useState<RunBundle | null>(null);
   const [error, setError] = useState('');
@@ -418,11 +464,16 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
   const events = bundle.events.slice().reverse();
   const visibleEvents = showAllEvents ? events : events.slice(0, 8);
   const visibleArtifacts = showAllArtifacts ? bundle.artifacts : bundle.artifacts.slice(0, 8);
+  const codingEvents = events.filter((event) => event.phase === 'coding').slice(0, 4);
   const gateTotal = run.gates.length || run.policy.checks.length;
   const gatePassed = run.gates.filter((gate) => ['pass', 'waived'].includes(gate.status)).length;
   const gateFailed = run.gates.filter((gate) => ['fail', 'error'].includes(gate.status)).length;
   const gatePending = Math.max(0, gateTotal - gatePassed - gateFailed);
   const reviewByCriterion = new Map(run.review?.criteria.map((criterion) => [criterion.id, criterion]) || []);
+  const deploymentAdvanced = seven.indexOf(run.phase) > seven.indexOf('deployment');
+  const remoteCiPassed =
+    !!run.prUrl &&
+    (deploymentAdvanced || ['approval', 'release', 'smoke', 'monitoring', 'completed'].includes(run.step));
   return (
     <>
       <header className="detail-head">
@@ -510,21 +561,7 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           </button>
         </div>
       )}
-      <nav className="run-detail-nav" aria-label="Run detail sections">
-        <a href="#run-overview">
-          <Activity /> Overview
-        </a>
-        <a href="#work-definition">
-          <Archive /> Work definition
-        </a>
-        <a href="#verification">
-          <ShieldCheck /> Verification
-        </a>
-        <a href="#run-history">
-          <Database /> History
-        </a>
-      </nav>
-      <section id="run-overview" className={`run-focus run-section-anchor ${guidance.action ? 'action' : ''}`}>
+      <section className={`run-focus ${guidance.action ? 'action' : ''}`}>
         <div className="focus-icon">{guidance.action ? <UserCheck /> : <Activity />}</div>
         <div className="focus-copy">
           <span className="eyebrow">{guidance.action ? 'ACTION REQUIRED' : 'HAPPENING NOW'}</span>
@@ -558,122 +595,223 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           <strong>{(run.candidateSha || run.candidateDigest || run.workspace.headSha).slice(0, 9)}</strong>
         </div>
       </section>
-      <div className="detail-sections">
-        <section id="work-definition" className="panel run-section run-section-anchor">
-          <div className="panel-head">
-            <div>
-              <p className="section-kicker">01 · WORK DEFINITION</p>
-              <h2>What Codex is building</h2>
-              <p>Complete scope, execution plan, acceptance criteria, and technical design.</p>
+      <nav className="run-detail-nav" aria-label="Seven SDLC phases">
+        {seven.map((phase, index) => (
+          <a href={`#phase-${phase}`} key={phase}>
+            <span>{index + 1}</span>
+            {phase[0].toUpperCase() + phase.slice(1)}
+          </a>
+        ))}
+      </nav>
+      <div className="lifecycle-sections">
+        <PhaseSection
+          number={1}
+          phase="planning"
+          title="Planning"
+          description="Define the scope, execution approach, resources, schedule, dependencies, and delivery risks."
+          icon={Archive}
+          run={run}
+        >
+          {run.plan ? (
+            <div className="phase-grid">
+              <article className="phase-card">
+                <div className="subsection-head">
+                  <span>Scope and execution plan</span>
+                  <CheckCircle2 />
+                </div>
+                <p className="phase-lead">{run.plan.scope}</p>
+                <ol className="plan-steps">
+                  {run.plan.steps.map((step, index) => (
+                    <li key={`${index}-${step}`}>
+                      <span>{index + 1}</span>
+                      <p>{step}</p>
+                    </li>
+                  ))}
+                </ol>
+                <div className="phase-tags">
+                  <span>{run.plan.estimatedEffort}</span>
+                  <span>{run.plan.costEstimate}</span>
+                </div>
+              </article>
+              <article className="phase-card phase-context">
+                <div className="subsection-head">
+                  <span>Schedule and planning context</span>
+                </div>
+                <div className="detail-list-grid">
+                  <DetailList title="Schedule" items={run.plan.schedule} />
+                  <DetailList title="Dependencies" items={run.plan.dependencies} />
+                  <DetailList title="Planning risks" items={run.plan.risks} />
+                </div>
+              </article>
             </div>
-            <Archive />
-          </div>
-          <div className="definition-grid">
-            <article className="definition-card">
-              <div className="subsection-head">
-                <span>Plan</span>
-                {run.plan && <CheckCircle2 />}
-              </div>
-              {run.plan ? (
-                <>
-                  <p className="definition-lead">{run.plan.scope}</p>
-                  <ol className="plan-steps">
-                    {run.plan.steps.map((step, index) => (
-                      <li key={`${index}-${step}`}>
-                        <span>{index + 1}</span>
-                        <p>{step}</p>
-                      </li>
-                    ))}
-                  </ol>
-                  <div className="definition-meta">
-                    <span>{run.plan.estimatedEffort}</span>
-                    <span>{run.plan.costEstimate}</span>
+          ) : (
+            <Empty
+              title="Planning pending"
+              text="Scope, schedule, dependencies, and execution steps will appear here."
+              compact
+            />
+          )}
+        </PhaseSection>
+
+        <PhaseSection
+          number={2}
+          phase="requirements"
+          title="Requirements"
+          description="Turn the request into measurable behavior, boundaries, assumptions, and acceptance evidence."
+          icon={BookOpen}
+          run={run}
+        >
+          {run.contract ? (
+            <>
+              <p className="phase-lead">{run.contract.summary}</p>
+              <div className="phase-grid requirements-grid">
+                <article className="phase-card">
+                  <div className="subsection-head">
+                    <span>Acceptance criteria</span>
+                    <strong>{run.contract.criteria.length}</strong>
                   </div>
-                </>
-              ) : (
-                <Empty title="Plan pending" text="Scope and implementation steps will appear here." compact />
-              )}
-            </article>
-            <article className="definition-card criteria-card">
-              <div className="subsection-head">
-                <span>Acceptance criteria</span>
-                <strong>{run.contract?.criteria.length || 0}</strong>
-              </div>
-              {run.contract?.criteria.length ? (
-                <div className="criteria-list">
-                  {run.contract.criteria.map((criterion) => {
-                    const verdict = reviewByCriterion.get(criterion.id);
-                    return (
-                      <div className={verdict?.satisfied ? 'satisfied' : ''} key={criterion.id}>
-                        <span>{verdict?.satisfied ? <Check /> : <Circle />}</span>
-                        <div>
-                          <strong>{criterion.id}</strong>
-                          <p>{criterion.description}</p>
-                          {verdict?.evidence && <small>{verdict.evidence}</small>}
+                  <div className="criteria-list">
+                    {run.contract.criteria.map((criterion) => {
+                      const verdict = reviewByCriterion.get(criterion.id);
+                      return (
+                        <div className={verdict?.satisfied ? 'satisfied' : ''} key={criterion.id}>
+                          <span>{verdict?.satisfied ? <Check /> : <Circle />}</span>
+                          <div>
+                            <strong>{criterion.id}</strong>
+                            <p>{criterion.description}</p>
+                            {verdict?.evidence && <small>{verdict.evidence}</small>}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <Empty title="Requirements pending" text="Measurable acceptance criteria will appear here." compact />
-              )}
-            </article>
-          </div>
-          <div className="definition-disclosures">
-            <details open={false}>
-              <summary>
-                <span>Technical design and test strategy</span>
-                <small>{run.design ? 'Architecture, interfaces, security, and compatibility' : 'Pending'}</small>
-              </summary>
-              {run.design ? (
-                <div className="disclosure-body">
-                  <p className="architecture-copy">{run.design.architecture}</p>
+                      );
+                    })}
+                  </div>
+                </article>
+                <article className="phase-card phase-context">
+                  <div className="subsection-head">
+                    <span>Scope boundaries and assumptions</span>
+                  </div>
                   <div className="detail-list-grid">
-                    <DetailList title="API contracts" items={run.design.apiContracts} />
-                    <DetailList title="Data changes" items={run.design.dataChanges} />
-                    <DetailList title="UI behavior" items={run.design.uiBehavior} />
-                    <DetailList title="Security" items={run.design.security} />
+                    <DetailList title="Assumptions" items={run.contract.assumptions} />
+                    <DetailList title="Non-goals" items={run.contract.nonGoals} />
+                    <DetailList title="Requirement risks" items={run.contract.risks} />
                   </div>
-                  <div className="design-notes">
-                    <div>
-                      <span>Compatibility</span>
-                      <p>{run.design.compatibility}</p>
-                    </div>
-                    <div>
-                      <span>Test strategy</span>
-                      <p>{run.design.testStrategy}</p>
-                    </div>
+                  <div className="phase-callout">
+                    <span>Clarification</span>
+                    <p>{run.question || run.answer || 'No stakeholder clarification is open.'}</p>
                   </div>
-                </div>
-              ) : (
-                <Empty title="Design pending" text="The technical blueprint will appear here." compact />
-              )}
-            </details>
-            <details>
-              <summary>
-                <span>Dependencies, assumptions, and risks</span>
-                <small>Supporting context for implementation decisions</small>
-              </summary>
-              <div className="disclosure-body detail-list-grid">
-                <DetailList title="Dependencies" items={run.plan?.dependencies} />
-                <DetailList title="Plan risks" items={run.plan?.risks} />
-                <DetailList title="Assumptions" items={run.contract?.assumptions} />
-                <DetailList title="Requirement risks" items={run.contract?.risks} />
-                <DetailList title="Non-goals" items={run.contract?.nonGoals} />
+                </article>
               </div>
-            </details>
-          </div>
-        </section>
-        <section id="verification" className="panel run-section run-section-anchor">
-          <div className="panel-head">
+            </>
+          ) : (
+            <Empty
+              title="Requirements pending"
+              text="Acceptance criteria and scope boundaries will appear here."
+              compact
+            />
+          )}
+        </PhaseSection>
+
+        <PhaseSection
+          number={3}
+          phase="design"
+          title="Design"
+          description="Describe the architecture, interfaces, data, user experience, security, and compatibility."
+          icon={Boxes}
+          run={run}
+        >
+          {run.design ? (
+            <>
+              <p className="phase-lead">{run.design.architecture}</p>
+              <div className="phase-card">
+                <div className="detail-list-grid design-grid">
+                  <DetailList title="API contracts" items={run.design.apiContracts} />
+                  <DetailList title="Data changes" items={run.design.dataChanges} />
+                  <DetailList title="UI behavior" items={run.design.uiBehavior} />
+                  <DetailList title="Security" items={run.design.security} />
+                </div>
+                <div className="phase-callout">
+                  <span>Compatibility</span>
+                  <p>{run.design.compatibility}</p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <Empty title="Design pending" text="Architecture and implementation decisions will appear here." compact />
+          )}
+        </PhaseSection>
+
+        <PhaseSection
+          number={4}
+          phase="coding"
+          title="Coding"
+          description="Implement the approved design in the developer's existing checkout and repair discovered defects."
+          icon={Code2}
+          run={run}
+        >
+          <div className="implementation-facts">
             <div>
-              <p className="section-kicker">02 · VERIFICATION</p>
-              <h2>Checks and review evidence</h2>
-              <p>Automated gates and acceptance review bound to the same candidate tree.</p>
+              <span>Current step</span>
+              <strong>{run.step.replaceAll('-', ' ')}</strong>
             </div>
-            <ShieldCheck />
+            <div>
+              <span>Workspace branch</span>
+              <strong>{run.workspace.branch}</strong>
+            </div>
+            <div>
+              <span>Starting revision</span>
+              <strong>{run.workspace.headSha.slice(0, 9)}</strong>
+            </div>
+            <div>
+              <span>Candidate tree</span>
+              <strong>{run.candidateDigest?.slice(0, 9) || 'Not verified'}</strong>
+            </div>
+            <div>
+              <span>Candidate commit</span>
+              <strong>{run.candidateSha?.slice(0, 9) || 'Not published'}</strong>
+            </div>
+            <div>
+              <span>Repair attempts</span>
+              <strong>{run.attempt}</strong>
+            </div>
           </div>
+          <article className="phase-card coding-activity">
+            <div className="subsection-head">
+              <span>Implementation activity</span>
+              <small>{codingEvents.length ? `${codingEvents.length} recent updates` : 'No coding updates yet'}</small>
+            </div>
+            {codingEvents.length ? (
+              <div className="compact-events">
+                {codingEvents.map((event) => (
+                  <div key={event.id}>
+                    <time>{new Date(event.time).toLocaleTimeString()}</time>
+                    <p>{event.message}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Empty
+                title="Implementation pending"
+                text="Coding updates will appear after the design checkpoint."
+                compact
+              />
+            )}
+          </article>
+        </PhaseSection>
+
+        <PhaseSection
+          number={5}
+          phase="testing"
+          title="Testing"
+          description="Run every configured quality gate and review the verified candidate against acceptance criteria."
+          icon={ShieldCheck}
+          run={run}
+        >
+          {run.design && (
+            <div className="phase-callout test-strategy">
+              <span>Test strategy</span>
+              <p>{run.design.testStrategy}</p>
+            </div>
+          )}
           <div className="verification-summary" aria-label="Verification summary">
             <div>
               <span>Total gates</span>
@@ -692,8 +830,8 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
               <strong>{gatePending}</strong>
             </div>
           </div>
-          <div className="verification-grid">
-            <div className="verification-pane">
+          <div className="phase-grid testing-grid">
+            <div className="phase-card">
               <div className="subsection-head">
                 <span>Quality gates</span>
                 <small>{run.candidateDigest ? `Tree ${run.candidateDigest.slice(0, 9)}` : 'Candidate pending'}</small>
@@ -728,7 +866,7 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
                 )}
               </div>
             </div>
-            <div className="verification-pane">
+            <div className="phase-card">
               <div className="subsection-head">
                 <span>Self-review</span>
                 <Search />
@@ -759,20 +897,110 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
               )}
             </div>
           </div>
-        </section>
-        <section id="run-history" className="panel run-section run-section-anchor">
-          <div className="panel-head">
-            <div>
-              <p className="section-kicker">03 · HISTORY</p>
-              <h2>Activity and evidence files</h2>
-              <p>Recent updates stay concise; every durable event and artifact remains available.</p>
-            </div>
+        </PhaseSection>
+
+        <PhaseSection
+          number={6}
+          phase="deployment"
+          title="Deployment"
+          description="Publish the verified revision, pass remote CI, obtain approval when required, and release safely."
+          icon={Rocket}
+          run={run}
+        >
+          <div className="delivery-grid">
+            <article className="delivery-step">
+              <span>1 · Publication</span>
+              <strong>{run.prUrl ? 'Pull request available' : 'Pending verified code'}</strong>
+              <p>
+                {run.prUrl
+                  ? `Candidate ${run.candidateSha?.slice(0, 9)} is published for review.`
+                  : 'Begins after testing and self-review pass.'}
+              </p>
+              {run.prUrl && (
+                <a className="text-link" href={run.prUrl} target="_blank" rel="noreferrer">
+                  <Github /> Open pull request
+                </a>
+              )}
+            </article>
+            <article className="delivery-step">
+              <span>2 · Remote CI</span>
+              <strong>
+                {run.step === 'remote-ci' ? 'Checks running' : remoteCiPassed ? 'Checks passed' : 'Pending'}
+              </strong>
+              <p>Required repository checks must pass for the exact published commit.</p>
+            </article>
+            <article className="delivery-step">
+              <span>3 · Approval</span>
+              <strong>
+                {!run.policy.deployment.enabled
+                  ? 'Not required by policy'
+                  : run.approval?.approvedBy
+                    ? `Approved by ${run.approval.approvedBy}`
+                    : run.status === 'awaiting_approval'
+                      ? 'Waiting for user'
+                      : 'Pending'}
+              </strong>
+              <p>
+                {run.policy.deployment.enabled
+                  ? `Only the dashboard can authorize ${run.policy.deployment.environment}.`
+                  : 'This repository completes after its pull request and required CI checks pass.'}
+              </p>
+            </article>
+            <article className="delivery-step">
+              <span>4 · Release</span>
+              <strong>
+                {run.deployment?.releasedAt ? 'Released' : run.policy.deployment.enabled ? 'Pending' : 'Not configured'}
+              </strong>
+              <p>
+                {run.deployment?.releasedAt
+                  ? `${run.policy.deployment.environment} released at ${new Date(run.deployment.releasedAt).toLocaleString()}.`
+                  : run.policy.deployment.enabled
+                    ? `Workflow ${run.policy.deployment.workflow} runs after approval.`
+                    : 'No automated environment release is configured for this policy.'}
+              </p>
+            </article>
+          </div>
+          <div className="phase-actions">
+            <a className="button quiet" href={`/api/runs/${id}/report`}>
+              <FileCheck2 /> Evidence report
+            </a>
+            {run.status === 'awaiting_approval' && (
+              <button className="button primary" onClick={() => setApprove(true)}>
+                <Rocket /> Review deployment
+              </button>
+            )}
+          </div>
+        </PhaseSection>
+
+        <PhaseSection
+          number={7}
+          phase="maintenance"
+          title="Maintenance"
+          description="Keep the durable delivery record, monitor released software, and preserve evidence for future support."
+          icon={Wrench}
+          run={run}
+        >
+          <div className="maintenance-summary">
             <Database />
+            <div>
+              <strong>
+                {run.status === 'monitoring'
+                  ? 'Health monitoring is active'
+                  : run.status === 'completed'
+                    ? 'Lifecycle evidence is complete'
+                    : 'Maintenance begins after delivery'}
+              </strong>
+              <p>
+                {run.deployment?.healthy
+                  ? 'The released environment is healthy.'
+                  : 'Activity and evidence remain available here throughout the run.'}
+              </p>
+            </div>
           </div>
           <div className="history-grid">
-            <div className="history-pane">
+            <div className="phase-card history-pane">
               <div className="subsection-head">
-                <span>Activity</span>
+                <span>Lifecycle activity</span>
                 <div>
                   <small>{bundle.events.length} events</small>
                   {bundle.events.length > 8 && (
@@ -801,9 +1029,9 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
                 <Empty title="No activity yet" text="Lifecycle events will appear here." compact />
               )}
             </div>
-            <div className="history-pane">
+            <div className="phase-card history-pane">
               <div className="subsection-head">
-                <span>Evidence files</span>
+                <span>Evidence ledger</span>
                 <div>
                   <small>{bundle.artifacts.length} files</small>
                   {bundle.artifacts.length > 8 && (
@@ -830,7 +1058,7 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
               )}
             </div>
           </div>
-        </section>
+        </PhaseSection>
       </div>
       {!['monitoring', 'completed', 'failed', 'cancelled'].includes(run.status) && (
         <button className="danger-link" onClick={() => action('cancel')}>

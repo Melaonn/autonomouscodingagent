@@ -13,7 +13,7 @@ test('local operator reaches native Codex and GitHub onboarding', async ({ page 
   await expect(page.getByText('Connect GitHub first')).toBeVisible();
 });
 
-test('run detail presents complete work, verification, and history without overflow', async ({ page }) => {
+test('run detail explains the work in the seven SDLC phases without overflow', async ({ page }) => {
   await page.goto('/');
   const runId = await page.evaluate(async () => {
     const meResponse = await fetch('/api/me');
@@ -162,27 +162,55 @@ test('run detail presents complete work, verification, and history without overf
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
   await page.getByRole('button', { name: /Run detail hierarchy test fixture/ }).click();
 
-  const navigation = page.getByRole('navigation', { name: 'Run detail sections' });
-  await expect(navigation.getByRole('link', { name: 'Overview' })).toBeVisible();
-  await expect(navigation.getByRole('link', { name: 'Work definition' })).toBeVisible();
-  await expect(navigation.getByRole('link', { name: 'Verification' })).toBeVisible();
-  await expect(navigation.getByRole('link', { name: 'History' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'What Codex is building' })).toBeVisible();
-  await expect(page.getByText('Keep the full history available through progressive disclosure.')).toBeVisible();
-  await expect(page.getByText('Fourth acceptance criterion remains visible.')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Checks and review evidence' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Activity and evidence files' })).toBeVisible();
+  const navigation = page.getByRole('navigation', { name: 'Seven SDLC phases' });
+  for (const label of [
+    '1 Planning',
+    '2 Requirements',
+    '3 Design',
+    '4 Coding',
+    '5 Testing',
+    '6 Deployment',
+    '7 Maintenance',
+  ]) {
+    await expect(navigation.getByRole('link', { name: label })).toBeVisible();
+  }
+  expect(await page.locator('.phase-section h2').allTextContents()).toEqual([
+    'Planning',
+    'Requirements',
+    'Design',
+    'Coding',
+    'Testing',
+    'Deployment',
+    'Maintenance',
+  ]);
 
-  await page.getByRole('button', { name: 'Show all activity' }).click();
+  const planning = page.locator('#phase-planning');
+  await expect(planning.getByText('Keep the full history available through progressive disclosure.')).toBeVisible();
+  await expect(planning.getByText('Dependencies', { exact: true })).toBeVisible();
+  const requirements = page.locator('#phase-requirements');
+  await expect(requirements.getByText('Fourth acceptance criterion remains visible.')).toBeVisible();
+  await expect(requirements.getByText('Assumptions', { exact: true })).toBeVisible();
+  const design = page.locator('#phase-design');
+  await expect(design.getByText('API contracts', { exact: true })).toBeVisible();
+  await expect(design.getByText('Test strategy', { exact: true })).toHaveCount(0);
+  await expect(page.locator('#phase-coding').getByText('Candidate tree', { exact: true })).toBeVisible();
+  const testing = page.locator('#phase-testing');
+  await expect(testing.getByText('Test strategy', { exact: true })).toBeVisible();
+  await expect(testing.getByText('Quality gates', { exact: true })).toBeVisible();
+  await expect(page.locator('#phase-deployment').getByText('1 · Publication', { exact: true })).toBeVisible();
+
+  const maintenance = page.locator('#phase-maintenance');
+  await maintenance.getByRole('button', { name: 'Show all activity' }).click();
   await expect(page.getByRole('button', { name: 'Show recent' }).first()).toBeVisible();
-  await page.getByRole('button', { name: 'Show all files' }).click();
+  await maintenance.getByRole('button', { name: 'Show all files' }).click();
   await expect(page.getByText('plan.json')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(
     true,
   );
 
   await page.setViewportSize({ width: 540, height: 900 });
-  await expect(page.getByRole('heading', { name: 'What Codex is building' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Planning', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Maintenance', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(
     true,
   );
