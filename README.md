@@ -59,6 +59,16 @@ Repository policies define the commands and release rules that apply every time.
 
 This is more useful than pasting a policy into one prompt: the harness selects and versions context, applies mandatory commands after implementation, prevents skipped gates, records evidence, and enforces deployment approval consistently.
 
+## Proving the benefit
+
+The repository includes a paired evaluator; the existence of the MCP is not treated as evidence that it helps. Run the same real task from the same commit with the same Codex model and reasoning effort twice: once with a manual SDLC prompt and once with the harness. Hidden acceptance, regression, and security commands then score both finished checkouts, while Codex JSONL supplies exact token usage.
+
+```powershell
+npm run evaluate -- --input evals/experiment.json --out evals/results/company-pilot
+```
+
+The evaluator reports paired quality confidence, critical regressions, total and uncached token ratios, interventions, repairs, and fairness failures. It returns a positive verdict only for statistically supported quality improvement, or for non-inferior quality with the configured token reduction. See [evals/README.md](evals/README.md) for the protocol. Until representative paired trials pass that policy, performance improvement remains unproven.
+
 ## Development
 
 ```powershell

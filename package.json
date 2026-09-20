@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "evaluate": "npm run build -w apps/server && node apps/server/dist/eval-main.js",
     "check": "npm run format:check && npm run typecheck && npm run lint && npm test && npm run build",
     "start": "node apps/server/dist/index.js"
   },

@@ -1,0 +1,55 @@
+{
+  "name": "Company SDLC harness pilot",
+  "harnessRevision": "replace-with-harness-git-sha",
+  "policyRevision": "replace-with-company-policy-version-or-hash",
+  "thresholds": {
+    "minimumPairedTrials": 5,
+    "qualityNonInferiority": 0.02,
+    "tokenReductionTarget": 0.1
+  },
+  "trials": [
+    {
+      "id": "historical-bug-01",
+      "task": "Use the exact high-level task supplied to both variants",
+      "model": "same-codex-model-id",
+      "reasoningEffort": "high",
+      "baseSha": "0000000000000000000000000000000000000000",
+      "checks": [
+        {
+          "id": "acceptance",
+          "label": "Public acceptance suite",
+          "argv": ["npm", "test", "--", "acceptance"],
+          "kind": "acceptance",
+          "severity": "high",
+          "weight": 2,
+          "timeoutSeconds": 600
+        },
+        {
+          "id": "incident-regression",
+          "label": "Held-out incident regression",
+          "argv": ["npm", "test", "--", "incident-regression"],
+          "kind": "held-out",
+          "severity": "critical",
+          "weight": 4,
+          "timeoutSeconds": 600
+        }
+      ],
+      "baseline": {
+        "root": "C:/replace/baseline-checkout",
+        "codexJsonl": "raw/historical-bug-01-baseline.jsonl",
+        "wallTimeMs": 0,
+        "humanInterventions": 0,
+        "repairIterations": 0,
+        "lifecycleStages": []
+      },
+      "harness": {
+        "root": "C:/replace/harness-checkout",
+        "codexJsonl": "raw/historical-bug-01-harness.jsonl",
+        "wallTimeMs": 0,
+        "humanInterventions": 0,
+        "repairIterations": 0,
+        "lifecycleStages": []
+      }
+    }
+  ]
+}
