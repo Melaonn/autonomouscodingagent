@@ -24,9 +24,16 @@ export const profiles: Record<string, CheckCommand[]> = {
     check(
       'unit',
       'unit',
-      ['npm', 'exec', '--', 'vitest', 'run', '--reporter=json', '--outputFile=.reports/unit.json'],
+      ['npm', 'run', 'test:unit', '--', '--reporter=json', '--outputFile=.reports/unit.json'],
       'vitest',
       '.reports/unit.json',
+    ),
+    check(
+      'integration',
+      'integration',
+      ['npm', 'run', 'test:integration', '--', '--reporter=json', '--outputFile=.reports/integration.json'],
+      'vitest',
+      '.reports/integration.json',
     ),
     check('e2e', 'e2e', ['npm', 'run', 'test:e2e', '--', '--reporter=json'], 'playwright', '.reports/e2e.json'),
     check('secrets', 'security', ['@sdlc/security', 'secrets'], 'gitleaks', '.reports/secrets.json'),

@@ -1474,8 +1474,8 @@ function RepositoriesPage() {
             <details>
               <summary>Advanced quality gates</summary>
               <p className="fine-print">
-                Recommended TypeScript gates include build, lint, types, unit, isolated browser E2E, secrets, SAST, and
-                dependency audit. Company-specific scanners can be added here.
+                Recommended TypeScript gates include build, lint, types, isolated unit and integration suites, browser
+                E2E, secrets, SAST, and dependency audit. Company-specific scanners can be added here.
               </p>
               {profiles[form.stack] && (
                 <button
