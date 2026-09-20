@@ -26,20 +26,24 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
 
    This writes one managed instruction block under your Codex home directory. It does not change the project checkout.
 
-4. Restart the Codex app or open a fresh Codex CLI session in your project. Work as usual:
+4. Restart the Codex app or open a fresh Codex CLI session in your project. Turn on **Plan mode**, then give the high-level request:
 
    > Build an audit history page with filtering and pagination.
 
-Codex now uses the `sdlc` MCP tools from the same conversation. Open the dashboard to see what is happening now, what comes next, quality evidence, failures, PR and CI status, and any decision that needs you.
+Codex uses native Plan mode to inspect the repository and ask its normal clarification questions. Choose to implement when the plan is correct. The same conversation then uses the `sdlc` MCP tools and existing checkout. Open the dashboard to see what is happening, what comes next, quality evidence, failures, PR and CI status, and any action that needs you.
+
+After local gates pass, Codex and the dashboard ask you to type `/review` and choose **Review uncommitted changes**. Codex's dedicated reviewer reports prioritized findings without changing the working tree. The control plane records those results, returns blocking findings to implementation, and proceeds only when the verified candidate and acceptance evidence pass.
+
+Plan mode selection and `/review` are native Codex client actions. The harness cannot switch modes or enter slash commands on your behalf. They keep planning questions and review output visible in the existing Codex task rather than launching a hidden agent.
 
 ## What happens after the prompt
 
-1. **Planning:** Codex inspects the current checkout and records scope, implementation steps, dependencies, effort, schedule, and risks.
+1. **Planning:** native Codex Plan mode inspects the current checkout, asks the developer any necessary questions, and produces the plan. After the developer accepts it, the harness records that approved plan with its native provenance.
 2. **Requirements:** it creates measurable acceptance criteria and maps testable criteria to configured checks. A real product ambiguity pauses for the user.
 3. **Design:** it records architecture, interfaces, data and UI changes, security decisions, compatibility, and test strategy.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.
 5. **Testing:** the MCP bridge reports per-gate progress in Codex and the dashboard while running configured commands locally. Build, lint, types, unit, isolated E2E, secret scanning, static security, and dependency results are bound to the exact Git tree digest. Unchanged dependency manifests reuse the verified installation, and independent checks run with bounded concurrency. Failures return the lifecycle to repair.
-6. **Review:** after checks pass, Codex reviews the diff and cites evidence for every acceptance criterion. Critical or high findings return to repair.
+6. **Review:** after checks pass, the run waits for native Codex `/review` of the uncommitted changes. Its dedicated findings and acceptance evidence are recorded. Critical or high findings return to repair and require verification and review again.
 7. **Delivery:** Codex commits and pushes the verified tree on a feature branch. The control plane creates or updates a pull request and waits for required GitHub checks.
 8. **Deployment and maintenance:** the dashboard asks a human to approve the exact commit and environment. It can dispatch deployment, verify health, roll back a failed release, and monitor the result.
 

@@ -75,4 +75,6 @@ if ($ProjectPath) {
 }
 
 Write-Output 'Codex is connected. Restart the Codex app or open a fresh CLI session.'
-Write-Output 'Open your existing project and ask Codex to build or fix something normally.'
+Write-Output 'Open your existing project, turn on Plan mode, and describe the feature or bug.'
+Write-Output 'After you accept the plan, Codex implements it through the governed lifecycle.'
+Write-Output 'When Testing asks for native review, type /review and choose Review uncommitted changes.'

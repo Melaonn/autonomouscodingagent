@@ -11,6 +11,7 @@ export type Status =
   | 'running'
   | 'repairing'
   | 'needs_input'
+  | 'needs_review'
   | 'awaiting_approval'
   | 'blocked'
   | 'failed'
@@ -110,6 +111,7 @@ export const contractSchema = z
 export type TaskContract = z.infer<typeof contractSchema>;
 
 export const planSchema = z.object({
+  source: z.literal('codex-plan-mode'),
   scope: z.string().min(1),
   steps: z.array(z.string()).min(1),
   dependencies: z.array(z.string()),
@@ -141,6 +143,8 @@ export const findingSchema = z.object({
   criterionId: z.string().nullable(),
 });
 export const reviewSchema = z.object({
+  source: z.literal('codex-native-review'),
+  scope: z.enum(['uncommitted', 'base-branch', 'commit', 'custom']),
   summary: z.string().min(1),
   findings: z.array(findingSchema),
   criteria: z.array(z.object({ id: z.string(), satisfied: z.boolean(), evidence: z.string() })),

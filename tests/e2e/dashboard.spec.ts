@@ -73,6 +73,7 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
     });
     const id = created.run.id;
     await post(`/api/runs/${id}/plan`, {
+      source: 'codex-plan-mode',
       scope: 'Make every part of a governed run easy to understand.',
       steps: [
         'Create a stable section navigator.',
@@ -187,6 +188,7 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
   const planning = page.locator('#phase-planning');
   await expect(planning.getByText('Keep the full history available through progressive disclosure.')).toBeVisible();
   await expect(planning.getByText('Dependencies', { exact: true })).toBeVisible();
+  await expect(planning.getByText('Native Codex Plan mode', { exact: true })).toBeVisible();
   const requirements = page.locator('#phase-requirements');
   await expect(requirements.getByText('Fourth acceptance criterion remains visible.')).toBeVisible();
   await expect(requirements.getByText('Assumptions', { exact: true })).toBeVisible();
@@ -197,6 +199,33 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
   const testing = page.locator('#phase-testing');
   await expect(testing.getByText('Test strategy', { exact: true })).toBeVisible();
   await expect(testing.getByText('Quality gates', { exact: true })).toBeVisible();
+  await expect(page.getByText('Codex native review required', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Run Codex native review' })).toBeVisible();
+
+  await page.evaluate(async (id) => {
+    const meResponse = await fetch('/api/me');
+    const me = (await meResponse.json()) as { csrf: string };
+    const response = await fetch(`/api/runs/${id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': me.csrf },
+      body: JSON.stringify({
+        source: 'codex-native-review',
+        scope: 'uncommitted',
+        summary: 'Native reviewer found no blocking issues.',
+        findings: [],
+        criteria: [
+          { id: 'AC1', satisfied: true, evidence: 'Native review confirmed the section navigation.' },
+          { id: 'AC2', satisfied: true, evidence: 'Unit evidence covers every plan step.' },
+          { id: 'AC3', satisfied: true, evidence: 'Native review confirmed the verification grouping.' },
+          { id: 'AC4', satisfied: true, evidence: 'Unit evidence covers the fourth acceptance criterion.' },
+        ],
+      }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+  }, runId);
+  await expect(testing.getByText('Codex /review', { exact: true })).toBeVisible({ timeout: 7_000 });
+  await expect(testing.getByText('Scope: uncommitted', { exact: true })).toBeVisible();
+  await expect(testing.getByText('Native reviewer found no blocking issues.')).toBeVisible();
   await expect(page.locator('#phase-deployment').getByText('1 · Publication', { exact: true })).toBeVisible();
 
   const maintenance = page.locator('#phase-maintenance');

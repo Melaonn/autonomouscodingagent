@@ -95,7 +95,10 @@ export function completionFailures(run: Run): string[] {
       failures.push(`${command.id}: required evidence missing, failing, or stale`);
   }
   if (!run.plan || !run.contract || !run.design || !run.review)
-    failures.push('Planning, requirements, design, or self-review evidence missing');
+    failures.push('Native planning, requirements, design, or Codex review evidence missing');
+  if (run.plan && run.plan.source !== 'codex-plan-mode') failures.push('Native Codex Plan mode provenance missing');
+  if (run.review && run.review.source !== 'codex-native-review')
+    failures.push('Codex native review provenance missing');
   for (const criterion of run.contract?.criteria || []) {
     const verdict = run.review?.criteria.find((c) => c.id === criterion.id);
     if (!verdict?.satisfied || !verdict.evidence.trim())
@@ -118,7 +121,7 @@ export function completionFailures(run: Run): string[] {
       failures.push(`${criterion.id}: test evidence missing`);
   }
   if (run.review?.findings.some((f) => ['high', 'critical'].includes(f.severity)))
-    failures.push('Blocking self-review findings');
+    failures.push('Blocking Codex native review findings');
   return failures;
 }
 export function approvalDigest(run: Run) {
@@ -135,5 +138,5 @@ export function validApproval(run: Run) {
   return !!run.approval?.approvedBy && !run.approval.rejected && run.approval.digest === approvalDigest(run);
 }
 export function report(run: Run) {
-  return `# SDLC evidence report\n\nRun: ${run.id}\nStatus: ${run.status}\nPhase: ${run.phase}\nWorkspace digest: ${run.candidateDigest || 'not verified'}\nCommit: ${run.candidateSha || 'not published'}\nStarting commit: ${run.workspace.headSha}\nPolicy: ${run.policy.version}\n\n## Request\n${run.prompt}\n\n## Acceptance criteria\n${run.contract?.criteria.map((c) => `- ${c.id}: ${c.description}`).join('\n') || 'Not generated'}\n\n## Verification\n${run.gates.map((g) => `- ${g.label}: ${g.status} (${g.tests === null ? 'command' : `${g.tests} tests`}, workspace ${g.candidateDigest})`).join('\n') || 'No verification evidence'}\n\n## Self-review\n${run.review?.summary || 'Not performed'}\n\n## Company context\n${run.context.map((c) => `- ${c.title}, version ${c.version}, SHA256 ${c.hash}`).join('\n') || 'No matching documents'}\n\n## Delivery\n${run.prUrl || 'No PR published'}\nDeployment: ${run.deployment?.releasedAt || 'Not deployed'}\n\n## Limitations\n${run.blocker || 'Passing checks establishes configured acceptance; company production validation is separate.'}\n`;
+  return `# SDLC evidence report\n\nRun: ${run.id}\nStatus: ${run.status}\nPhase: ${run.phase}\nWorkspace digest: ${run.candidateDigest || 'not verified'}\nCommit: ${run.candidateSha || 'not published'}\nStarting commit: ${run.workspace.headSha}\nPolicy: ${run.policy.version}\n\n## Request\n${run.prompt}\n\n## Native planning\n${run.plan?.source === 'codex-plan-mode' ? 'Codex Plan mode' : 'Legacy or unverified planning source'}\n\n## Acceptance criteria\n${run.contract?.criteria.map((c) => `- ${c.id}: ${c.description}`).join('\n') || 'Not generated'}\n\n## Verification\n${run.gates.map((g) => `- ${g.label}: ${g.status} (${g.tests === null ? 'command' : `${g.tests} tests`}, workspace ${g.candidateDigest})`).join('\n') || 'No verification evidence'}\n\n## Codex native review\n${run.review ? `${run.review.summary}\nScope: ${run.review.scope || 'legacy'}` : 'Not performed'}\n\n## Company context\n${run.context.map((c) => `- ${c.title}, version ${c.version}, SHA256 ${c.hash}`).join('\n') || 'No matching documents'}\n\n## Delivery\n${run.prUrl || 'No PR published'}\nDeployment: ${run.deployment?.releasedAt || 'Not deployed'}\n\n## Limitations\n${run.blocker || 'Passing checks establishes configured acceptance; company production validation is separate.'}\n`;
 }

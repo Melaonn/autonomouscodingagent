@@ -66,7 +66,7 @@ export async function createOrUpdatePr(run: Run) {
   const existing = await api<{ number: number; html_url: string }[]>(
     `/repos/${repo.owner}/${repo.repo}/pulls?state=open&head=${encodeURIComponent(head)}`,
   );
-  const body = `Native Codex SDLC run \`${run.id}\`. Planning, requirements, design, configured verification, same-session review, deployment approval, and maintenance evidence are tracked by the control plane.\n\nCandidate: \`${run.candidateSha}\``;
+  const body = `Native Codex SDLC run \`${run.id}\`. Codex Plan mode, requirements, design, configured verification, native /review, deployment approval, and maintenance evidence are tracked by the control plane.\n\nCandidate: \`${run.candidateSha}\``;
   if (existing[0]) {
     await api(`/repos/${repo.owner}/${repo.repo}/pulls/${existing[0].number}`, {
       method: 'PATCH',

@@ -74,6 +74,12 @@ function runGuidance(run: Run) {
       detail: run.question || 'Answer the open product question.',
       action: true,
     };
+  if (run.status === 'needs_review')
+    return {
+      label: 'Run Codex native review',
+      detail: 'Type /review in this Codex project and choose Review uncommitted changes.',
+      action: true,
+    };
   if (run.status === 'awaiting_approval')
     return {
       label: 'Review deployment',
@@ -102,12 +108,6 @@ function runGuidance(run: Run) {
     return { label: 'Run needs attention', detail: run.blocker || 'Review the failure before resuming.', action: true };
   if (run.status === 'cancelled')
     return { label: 'Run cancelled', detail: 'No further lifecycle actions will run.', action: false };
-  if (run.step === 'self-review')
-    return {
-      label: 'Automated checks passed',
-      detail: 'Codex is reviewing the verified changes against every acceptance criterion.',
-      action: false,
-    };
   if (run.step === 'publish')
     return {
       label: 'Preparing the verified change',
@@ -168,7 +168,7 @@ function Badge({ status }: { status: string }) {
       <CheckCircle2 />
     ) : status === 'failed' || status === 'blocked' || status === 'fail' || status === 'error' ? (
       <XCircle />
-    ) : status === 'awaiting_approval' || status === 'needs_input' ? (
+    ) : status === 'awaiting_approval' || status === 'needs_input' || status === 'needs_review' ? (
       <AlertTriangle />
     ) : (
       <LoaderCircle className="spin" />
@@ -267,9 +267,11 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
   }, []);
-  const active = runs.filter((r) => ['running', 'repairing', 'needs_input', 'awaiting_approval'].includes(r.status));
+  const active = runs.filter((r) =>
+    ['running', 'repairing', 'needs_input', 'needs_review', 'awaiting_approval'].includes(r.status),
+  );
   const attention = runs.filter((r) => ['failed', 'blocked'].includes(r.status));
-  const decisions = runs.filter((r) => ['needs_input', 'awaiting_approval'].includes(r.status));
+  const decisions = runs.filter((r) => ['needs_input', 'needs_review', 'awaiting_approval'].includes(r.status));
   const successful = runs.filter((r) => ['completed', 'monitoring'].includes(r.status));
   return (
     <>
@@ -283,7 +285,12 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
       </header>
       <div className="metric-grid">
         <Metric label="In progress" value={active.length} detail="Codex is working" icon={Activity} />
-        <Metric label="Waiting for you" value={decisions.length} detail="Questions or approvals" icon={UserCheck} />
+        <Metric
+          label="Waiting for you"
+          value={decisions.length}
+          detail="Questions, review, or approval"
+          icon={UserCheck}
+        />
         <Metric label="Successful" value={successful.length} detail="Completed or monitored" icon={CheckCircle2} />
         <Metric label="Needs attention" value={attention.length} detail="Failed or blocked" icon={AlertTriangle} />
       </div>
@@ -561,6 +568,18 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           </button>
         </div>
       )}
+      {run.status === 'needs_review' && (
+        <div className="decision native-review">
+          <Search />
+          <div>
+            <strong>Codex native review required</strong>
+            <p>
+              In this project, type <code>/review</code> and choose <b>Review uncommitted changes</b>. The dedicated
+              reviewer reports findings without modifying the working tree; return here afterward to continue the run.
+            </p>
+          </div>
+        </div>
+      )}
       <section className={`run-focus ${guidance.action ? 'action' : ''}`}>
         <div className="focus-icon">{guidance.action ? <UserCheck /> : <Activity />}</div>
         <div className="focus-copy">
@@ -629,6 +648,9 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
                   ))}
                 </ol>
                 <div className="phase-tags">
+                  <span>
+                    {run.plan.source === 'codex-plan-mode' ? 'Native Codex Plan mode' : 'Legacy planning record'}
+                  </span>
                   <span>{run.plan.estimatedEffort}</span>
                   <span>{run.plan.costEstimate}</span>
                 </div>
@@ -868,11 +890,17 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
             </div>
             <div className="phase-card">
               <div className="subsection-head">
-                <span>Self-review</span>
+                <span>Native Codex review</span>
                 <Search />
               </div>
               {run.review ? (
                 <>
+                  <div className="phase-tags review-provenance">
+                    <span>
+                      {run.review.source === 'codex-native-review' ? 'Codex /review' : 'Legacy review record'}
+                    </span>
+                    <span>Scope: {run.review.scope || 'legacy'}</span>
+                  </div>
                   <p className="review-summary">{run.review.summary}</p>
                   {!run.review.findings.length && (
                     <div className="review-clear">
@@ -893,7 +921,15 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
                   ))}
                 </>
               ) : (
-                <Empty title="Review pending" text="Review begins after automated gates pass." compact />
+                <Empty
+                  title={run.status === 'needs_review' ? 'Native review required' : 'Review pending'}
+                  text={
+                    run.status === 'needs_review'
+                      ? 'Type /review in Codex and choose Review uncommitted changes.'
+                      : 'Codex /review begins after automated gates pass.'
+                  }
+                  compact
+                />
               )}
             </div>
           </div>
@@ -914,7 +950,7 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
               <p>
                 {run.prUrl
                   ? `Candidate ${run.candidateSha?.slice(0, 9)} is published for review.`
-                  : 'Begins after testing and self-review pass.'}
+                  : 'Begins after testing and native Codex review pass.'}
               </p>
               {run.prUrl && (
                 <a className="text-link" href={run.prUrl} target="_blank" rel="noreferrer">
@@ -1606,6 +1642,11 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
             <p>
               Run <code>.\connect-codex.ps1</code> once. It updates your Codex configuration without changing the
               project. There is no second Codex login, clone, or Docker worker.
+            </p>
+            <p>
+              Start feature work in native Plan mode so Codex can ask its normal questions. After you choose to
+              implement, the governed run begins. When Testing requests it, type <code>/review</code> in the same
+              project to run Codex's dedicated reviewer.
             </p>
           </div>
           <SetupStatus label="Connected" />

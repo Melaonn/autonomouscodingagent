@@ -26,17 +26,20 @@ function nextAction(run: Run) {
   if (run.status === 'completed' && run.step === 'validated')
     return 'Report that validation completed without workspace changes or publication, with its recorded evidence.';
   if (run.status === 'needs_input') return 'Ask the user the exact question, then call sdlc_answer.';
+  if (run.status === 'needs_review')
+    return 'Ask the developer to type /review in this Codex project and choose Review uncommitted changes. After the native reviewer reports in this chat, submit its exact findings and acceptance evidence with sdlc_review.';
   if (run.status === 'awaiting_approval')
     return 'Ask the user to approve or reject the exact deployment in the local dashboard.';
   if (run.status === 'repairing') return 'Fix the reported failures in this same checkout, then call sdlc_verify.';
   if (run.status !== 'running') return 'Report this exact status and its evidence. Do not claim a failed run passed.';
-  if (run.phase === 'planning') return 'Inspect the repository once, create the delivery plan, then call sdlc_plan.';
+  if (run.phase === 'planning')
+    return 'Record the native Codex Plan mode output that the developer already approved, then call sdlc_plan. Do not repeat resolved planning questions.';
   if (run.phase === 'requirements') return 'Derive measurable acceptance criteria, then call sdlc_requirements.';
   if (run.phase === 'design') return 'Create the technical blueprint and test strategy, then call sdlc_design.';
   if (run.phase === 'coding')
     return 'Implement in the current checkout, keeping progress visible, then call sdlc_verify.';
-  if (run.phase === 'testing' && run.step === 'self-review')
-    return 'Review the diff and evidence in this same session, then call sdlc_review.';
+  if (run.phase === 'testing' && run.step === 'native-review')
+    return 'Wait for Codex native /review findings, then call sdlc_review with their exact evidence.';
   if (run.phase === 'deployment' && run.step === 'publish')
     return 'Create a feature branch, commit and push the verified files, then call sdlc_publish.';
   if (run.phase === 'deployment' && run.step === 'remote-ci')
@@ -85,7 +88,7 @@ export function createChatServer(api: ChatApi) {
     { name: 'sdlc', version: '0.3.0' },
     {
       instructions:
-        "Use these tools as the control plane for feature and bug work. The current Codex app or CLI conversation is the only coding agent: inspect and edit the developer's existing checkout, submit planning/requirements/design checkpoints, run sdlc_verify, repair failures in the same conversation, and publish only verified content. Never start another Codex process or clone the repository. Tool evidence, not model prose, decides completion. Deployment approval stays in the dashboard.",
+        "Use these tools as the control plane for feature and bug work. Native Codex Plan mode handles discovery and user questions before implementation. The current Codex app or CLI conversation is the only coding agent: record the approved native plan, inspect and edit the developer's existing checkout, run sdlc_verify, wait for native /review findings, repair failures in the same conversation, and publish only verified content. Never start another Codex process, clone the repository, simulate Plan mode, or replace /review with an ad hoc review. Tool evidence, not model prose, decides completion. Deployment approval stays in the dashboard.",
     },
   );
   const result = (value: unknown) => ({
@@ -193,7 +196,8 @@ export function createChatServer(api: ChatApi) {
   server.registerTool(
     'sdlc_plan',
     {
-      description: 'Record the planning phase produced by this native Codex conversation.',
+      description:
+        'Record the plan the developer approved in native Codex Plan mode after they switch to implementation. Reuse its resolved questions; do not emulate Plan mode or re-plan.',
       inputSchema: { ...runInput, plan: planSchema },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -323,7 +327,7 @@ export function createChatServer(api: ChatApi) {
     'sdlc_review',
     {
       description:
-        'Record the current conversation self-review after all configured checks pass. Be explicit about findings and criterion evidence.',
+        'Record the exact findings from Codex native /review after all configured checks pass. Do not substitute an ad hoc review. Include its selected scope and evidence for every criterion.',
       inputSchema: { ...runInput, review: reviewSchema },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -388,7 +392,7 @@ export function createChatServer(api: ChatApi) {
     'sdlc_status',
     {
       description:
-        'Read lifecycle checkpoints, gates, self-review, activity and evidence. A bounded wait returns on change or after 20 seconds.',
+        'Read lifecycle checkpoints, gates, native Codex review, activity and evidence. A bounded wait returns on change or after 20 seconds.',
       inputSchema: {
         ...runInput,
         waitSeconds: z.number().int().min(0).max(20).default(0),

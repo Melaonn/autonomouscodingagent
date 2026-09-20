@@ -497,7 +497,8 @@ nav button.selected::before {
   color: var(--red);
 }
 .badge.awaiting_approval,
-.badge.needs_input {
+.badge.needs_input,
+.badge.needs_review {
   background: var(--amber-soft);
   color: var(--amber);
 }
@@ -817,6 +818,15 @@ nav button.selected::before {
 }
 .decision.deployment > svg {
   color: var(--accent);
+}
+
+.decision.native-review {
+  border-color: var(--blue-line);
+  background: var(--blue-soft);
+}
+
+.decision.native-review > svg {
+  color: var(--blue);
 }
 
 .answer {
@@ -1865,6 +1875,11 @@ textarea::placeholder {
   color: var(--ink-2);
   line-height: 1.55;
   margin: 0 0 12px;
+}
+
+.review-provenance {
+  margin: 0 0 12px;
+  padding: 0 0 10px;
 }
 
 .finding {

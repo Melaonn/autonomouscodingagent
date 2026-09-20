@@ -65,6 +65,7 @@ describe('validation-only lifecycle', () => {
     await service.savePlan(
       run.id,
       {
+        source: 'codex-plan-mode',
         scope: 'Existing behavior',
         steps: ['verify'],
         dependencies: [],
@@ -117,6 +118,8 @@ describe('validation-only lifecycle', () => {
     const completed = await service.saveReview(
       run.id,
       {
+        source: 'codex-native-review',
+        scope: 'uncommitted',
         summary: 'Validated',
         findings: [],
         criteria: [{ id: 'AC-1', satisfied: true, evidence: 'Unit gate passed' }],
