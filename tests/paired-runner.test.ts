@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { pairedRunSchema, parseHarnessState, parseThreadId } from '../apps/server/src/paired-runner.js';
+import {
+  pairedRunSchema,
+  parseHarnessState,
+  parseNativeReviewOutput,
+  parseThreadId,
+} from '../apps/server/src/paired-runner.js';
 
 describe('paired benchmark runner', () => {
   it('requires exactly one prompt source for every task', () => {
@@ -56,5 +61,30 @@ describe('paired benchmark runner', () => {
       event('sdlc_verify', { runId: 'run-1', status: 'needs_review', attempt: 2 }),
     ].join('\n');
     expect(parseHarnessState(jsonl)).toEqual({ runId: 'run-1', status: 'needs_review', attempt: 2 });
+  });
+
+  it('accepts structured review findings and explicit no-finding prose', () => {
+    const review = {
+      summary: 'A nested case is missing.',
+      findings: [
+        {
+          id: 'R1',
+          severity: 'high',
+          file: 'src/rule.ts',
+          line: 10,
+          description: 'Nested elements remain incorrect.',
+          correction: 'Handle the ancestor case.',
+          criterionId: null,
+        },
+      ],
+    };
+    expect(parseNativeReviewOutput(JSON.stringify(review))).toEqual(review);
+    expect(parseNativeReviewOutput('No regressions are evident in the diff.')).toEqual({
+      summary: 'No regressions are evident in the diff.',
+      findings: [],
+    });
+    expect(() => parseNativeReviewOutput('The nested case is broken.')).toThrow(
+      'Native review did not return structured findings',
+    );
   });
 });

@@ -248,6 +248,21 @@ MANDATORY: your first tool call must be sdlc_start with this checkout's absolute
 This is a pre-authorized, noninteractive paired evaluation. The benchmark request itself is the developer's acceptance of a faithful implementation plan, so continue in this same session without pausing for plan approval. After implementation, call sdlc_verify with the required lifecycle checkpoint, repair every returned failure, and stop when verification asks for native review or reaches a verified delivery state. The repository policy is already prepared. Do all implementation work yourself; do not spawn, delegate, or use collaboration tools. Do not commit, push, publish, or deploy.
 `;
 
+const reviewInstructions = `
+Perform only the requested native code review. Do not call MCP tools, start an SDLC run, modify files, or run the project's test suite. Inspect the uncommitted diff for correctness, regressions, security, and missing requirements. Your final response must be one JSON object with a summary string and a findings array. Each finding must contain id, severity, file, line, description, correction, and nullable criterionId. Return an empty findings array only when there are no actionable findings. Do not wrap the JSON in Markdown.
+`;
+
+function reviewCodexConfig(run: PairedRun) {
+  return [
+    `model = ${tomlString(run.model)}`,
+    `model_reasoning_effort = ${tomlString(run.reasoningEffort)}`,
+    'project_doc_max_bytes = 0',
+    '',
+    '[features]',
+    'multi_agent = false',
+  ].join('\n');
+}
+
 function isolationArgs(run: PairedRun) {
   return run.externalIsolation
     ? ['--dangerously-bypass-approvals-and-sandbox']
@@ -332,10 +347,37 @@ const reviewSchema = {
   additionalProperties: false,
 };
 
+const reviewPayloadSchema = z.object({
+  summary: z.string().min(1),
+  findings: z.array(
+    z.object({
+      id: z.string(),
+      severity: z.enum(['critical', 'high', 'medium', 'low']),
+      file: z.string(),
+      line: z.number().int().nonnegative(),
+      description: z.string(),
+      correction: z.string(),
+      criterionId: z.string().nullable(),
+    }),
+  ),
+});
+
+export function parseNativeReviewOutput(text: string) {
+  const output = text.trim();
+  try {
+    return reviewPayloadSchema.parse(JSON.parse(output));
+  } catch (error) {
+    if (/\b(no (?:actionable )?findings|no regressions (?:are )?evident|no issues found)\b/i.test(output))
+      return { summary: output, findings: [] };
+    throw new Error('Native review did not return structured findings', { cause: error });
+  }
+}
+
 async function completeHarnessReview(
   run: PairedRun,
   task: PairedTask,
-  home: string,
+  implementationHome: string,
+  reviewerHome: string,
   result: VariantResult,
   outputDirectory: string,
 ) {
@@ -363,18 +405,17 @@ async function completeHarnessReview(
       schemaPath,
       '--output-last-message',
       reviewOutput,
-      'Review the implementation for correctness, regressions, security, and missing requirements. Report only actionable findings.',
     ],
     result.root,
-    { ...process.env, CODEX_HOME: home },
+    { ...process.env, CODEX_HOME: reviewerHome },
     reviewJsonl,
     reviewStderr,
   );
   if (review.exitCode !== 0) throw new Error(`${task.id}: native review failed; inspect ${reviewStderr}`);
-  const reviewPayload = JSON.parse(await readFile(reviewOutput, 'utf8')) as Record<string, unknown>;
+  const reviewPayload = parseNativeReviewOutput(await readFile(reviewOutput, 'utf8'));
   const followUp = [
     `The independent native review for governed run ${state.runId} is complete.`,
-    'Call sdlc_review once with scope uncommitted and the exact review below.',
+    `Call sdlc_review once with runId ${state.runId} and set its review argument exactly to the JSON below.`,
     'If it returns repairing, fix every blocking finding and call sdlc_verify again without a checkpoint.',
     'Stop when the run is verified and ready for publication. Do not commit, push, publish, or deploy.',
     JSON.stringify(reviewPayload),
@@ -396,7 +437,7 @@ async function completeHarnessReview(
       followUp,
     ],
     result.root,
-    { ...process.env, CODEX_HOME: home },
+    { ...process.env, CODEX_HOME: implementationHome },
     resumeJsonl,
     resumeStderr,
   );
@@ -435,6 +476,7 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
   const homesRoot = join(outputDirectory, 'codex-homes');
   const baselineHome = join(homesRoot, 'baseline');
   const harnessHome = join(homesRoot, 'harness');
+  const reviewerHome = join(homesRoot, 'reviewer');
   await Promise.all([
     createCodexHome(baselineHome, sourceCodexHome, environmentInstructions, codexConfig(input, 'baseline', token)),
     createCodexHome(
@@ -443,6 +485,7 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
       `${headlessInstructions}\n${workflowInstructions}\n${environmentInstructions}`,
       codexConfig(input, 'harness', token),
     ),
+    createCodexHome(reviewerHome, sourceCodexHome, reviewInstructions, reviewCodexConfig(input)),
   ]);
 
   const results: TaskResult[] = [];
@@ -461,7 +504,7 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
     let harness: VariantResult | undefined;
     if (input.executionVariant !== 'baseline') {
       harness = await runInitial(input, task, 'harness', harnessRoot, harnessHome, prompt, outputDirectory);
-      harness = await completeHarnessReview(input, task, harnessHome, harness, outputDirectory);
+      harness = await completeHarnessReview(input, task, harnessHome, reviewerHome, harness, outputDirectory);
     }
     results.push({
       id: task.id,
