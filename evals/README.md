@@ -39,12 +39,21 @@ npm run evaluate -- --input evals/experiment.json --out evals/results/company-pi
 
 The evaluator does not launch an agent. It measures already completed paired checkouts, parses exact Codex usage, runs the same hidden commands, and produces JSON plus a reviewer-friendly Markdown report.
 
+## Anti-overfitting rules
+
+- Runtime harness code must not contain benchmark repository names, task IDs, prompt fragments, expected patches, or hidden-test behavior.
+- Freeze and record the harness revision before selecting or executing the scored tasks. Improvements made after inspecting a failure belong to a later benchmark run.
+- Keep hidden checks outside both agent workspaces and do not expose their output until each variant has finished.
+- Use unchanged prompts, model versions, reasoning settings, base commits, credentials, and machine constraints for each pair.
+- Count every implementation, review, repair, and recovery turn. Do not discard expensive failures or report only successful attempts.
+- Use multiple unrelated repositories and task families before making a general cross-repository claim. A single-repository result applies only to that repository distribution.
+
 ## Claim policy
 
 The report says **beneficial** only when one of these statements is supported:
 
 1. The lower bound of the paired 95% confidence interval shows a quality improvement and there are no critical regressions. Higher token use is allowed but reported.
-2. Quality is non-inferior within the configured margin and token use meets the configured reduction target.
+2. Quality is non-inferior within the configured margin and both total and uncached token use meet the configured reduction target. New experiments default to a 50% reduction target, and the evaluator does not allow a lower target.
 
 Fewer than five paired trials, missing usage logs, identical checkouts, unfair starting commits, evaluator-mutated workspaces, and wide confidence intervals are reported explicitly. The report also states that blinding is an operator responsibility because software cannot prove the hidden checks were never shown to an agent. An inconclusive report is a valid result and must not be presented as proof.
 

@@ -36,13 +36,13 @@ After local gates pass, the controller applies the repository's explicit review 
 
 Plan mode selection and `/review` are native Codex client actions. The harness cannot switch modes or enter slash commands on your behalf. They keep planning questions and review output visible in the existing Codex task rather than launching a hidden agent.
 
-The agent-facing path exposes five tools. A normal low-risk delivery uses three calls: start during planning, verify after implementation, and publish. A required native review adds one call. The controller records the accepted specification during the first verification, follows progress and CI itself, and keeps successful command output out of the model context.
+The agent-facing path exposes five tools. A normal low-risk delivery uses three calls: start during planning, verify after implementation, and publish. A required native review adds one call. The first verification sends only a compact lifecycle checkpoint instead of repeating the full Plan-mode conversation. The controller expands and records the SDLC evidence, follows progress and CI itself, and keeps successful command output out of the model context.
 
 ## What happens after the prompt
 
-1. **Planning:** native Codex Plan mode inspects the checkout and calls `sdlc_start` once. The controller returns bounded company context selected from indexed document chunks. Codex asks normal clarification questions and produces the plan.
+1. **Planning:** native Codex Plan mode calls `sdlc_start` first, then inspects the checkout once with bounded company context selected from indexed document chunks. Codex asks normal clarification questions and produces the plan.
 2. **Requirements:** Codex creates measurable acceptance criteria and maps testable criteria to configured checks after product questions are resolved in Plan mode.
-3. **Design:** the first `sdlc_verify` call records the accepted plan, requirements, technical design, and declared change risk as one specification checkpoint.
+3. **Design:** the first `sdlc_verify` call records a compact plan, requirements, design, test-strategy, and change-risk checkpoint, which the controller expands into the lifecycle record.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.
 5. **Testing:** `sdlc_verify` runs configured commands locally, reports progress, and binds evidence to the exact Git tree. Independent checks run with bounded concurrency. A configurable changed-test policy prevents source changes from passing only because old tests stayed green. Codex receives detailed output only for failures, so it can repair without paying to reread successful logs.
 6. **Review:** declarative repository policy decides whether native `/review` is required using risk level, sensitive path globs, change breadth, and evidence requirements. Critical or high findings return to repair.

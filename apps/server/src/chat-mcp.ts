@@ -3,7 +3,6 @@ import { z } from 'zod';
 import {
   changeRiskSchema,
   contractSchema,
-  criterionSchema,
   designSchema,
   planSchema,
   reviewSchema,
@@ -22,19 +21,15 @@ export interface ChatApi {
 type Detail = { run: Run; events: Event[]; artifacts: Artifact[] };
 const runInput = { runId: z.string().uuid() };
 const active = new Set(['running', 'repairing']);
-const approvedPlanSchema = planSchema.omit({ source: true });
-const acceptanceCriterionInputSchema = criterionSchema.omit({ checkIds: true, evidence: true });
-const requirementsInputSchema = z.object({
-  summary: contractSchema.shape.summary,
-  criteria: z.array(acceptanceCriterionInputSchema).min(1),
-  nonGoals: contractSchema.shape.nonGoals,
-  assumptions: contractSchema.shape.assumptions,
-  risks: contractSchema.shape.risks,
-});
-const specificationInputSchema = z.object({
-  plan: approvedPlanSchema,
-  requirements: requirementsInputSchema,
-  design: designSchema,
+const checkpointText = z.string().trim().min(1).max(2_000);
+const checkpointItem = z.string().trim().min(1).max(500);
+const checkpointInputSchema = z.object({
+  planSummary: checkpointText,
+  planSteps: z.array(checkpointItem).min(1).max(12),
+  requirementsSummary: checkpointText,
+  acceptanceCriteria: z.array(checkpointItem).min(1).max(20),
+  designSummary: checkpointText,
+  testStrategy: checkpointText,
   risk: changeRiskSchema,
 });
 const nativeReviewSchema = z.object({
@@ -49,7 +44,7 @@ function nextAction(run: Run) {
     return 'Ask the developer to run native /review for uncommitted changes, then submit its findings with sdlc_review.';
   if (run.status === 'awaiting_approval') return 'Deployment approval is waiting in the local dashboard.';
   if (run.status === 'repairing')
-    return 'Fix only the reported failures, then call sdlc_verify again without a specification.';
+    return 'Fix only the reported failures, then call sdlc_verify again without a checkpoint.';
   if (run.status !== 'running') return `Report that the governed run is ${run.status}.`;
   if (run.phase === 'planning') return 'Finish native Plan mode, implement the accepted plan, then call sdlc_verify.';
   if (run.phase === 'coding')
@@ -92,10 +87,7 @@ function assertProtectedPaths(workspace: InspectedWorkspace, repository: Reposit
   if (changed) throw new Error(`Protected policy path is modified: ${changed}`);
 }
 
-function bindAcceptanceEvidence(
-  requirements: z.infer<typeof requirementsInputSchema>,
-  policy: Repository,
-): TaskContract {
+function testGateIds(policy: Repository) {
   const testGateIds = policy.checks
     .filter((check) => check.required && ['unit', 'integration', 'e2e'].includes(check.kind))
     .map((check) => check.id);
@@ -103,23 +95,53 @@ function bindAcceptanceEvidence(
     throw new Error(
       'Repository policy needs a required unit, integration, or E2E gate for test-backed acceptance criteria',
     );
-  return contractSchema.parse({
-    ...requirements,
-    clarification: null,
-    criteria: requirements.criteria.map((criterion) => ({
-      ...criterion,
-      evidence: 'test',
-      checkIds: testGateIds,
-    })),
+  return testGateIds;
+}
+
+function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, policy: Repository) {
+  const checkIds = testGateIds(policy);
+  const plan = planSchema.parse({
+    source: 'codex-plan-mode',
+    scope: checkpoint.planSummary,
+    steps: checkpoint.planSteps,
+    dependencies: [],
+    estimatedEffort: 'Defined in native Plan mode',
+    costEstimate: 'Not estimated by the control plane',
+    schedule: ['Implementation', 'Automated verification'],
+    risks: [checkpoint.risk.rationale],
   });
+  const requirements: TaskContract = contractSchema.parse({
+    summary: checkpoint.requirementsSummary,
+    clarification: null,
+    criteria: checkpoint.acceptanceCriteria.map((description, index) => ({
+      id: `AC-${index + 1}`,
+      category: 'functional',
+      description,
+      evidence: 'test',
+      checkIds,
+    })),
+    nonGoals: [],
+    assumptions: [],
+    risks: [checkpoint.risk.rationale],
+  });
+  const design = designSchema.parse({
+    architecture: checkpoint.designSummary,
+    apiContracts: [],
+    dataChanges: [],
+    uiBehavior: [],
+    security: [],
+    compatibility: 'Preserve existing behavior outside the accepted request.',
+    testStrategy: checkpoint.testStrategy,
+  });
+  return { plan, requirements, design, risk: checkpoint.risk };
 }
 
 export function createChatServer(api: ChatApi) {
   const server = new McpServer(
-    { name: 'sdlc', version: '0.5.0' },
+    { name: 'sdlc', version: '0.6.0' },
     {
       instructions:
-        'Use sdlc_start once during native Plan mode to retrieve bounded company context. After implementation, call sdlc_verify once with the accepted specification; it records lifecycle evidence and runs every configured gate. Do not manually repeat the full configured gate suite. Low-risk changes proceed without a separate review when repository policy allows it. If native review is required, use /review and submit only its findings with sdlc_review. Publish only the exact verified tree with sdlc_publish. Deployment approval remains in the dashboard.',
+        'Call sdlc_start before repository inspection in native Plan mode, then inspect once with its bounded company context. After implementation, proceed directly to sdlc_verify with a compact checkpoint: plan summary and steps, requirements summary and acceptance criteria, design and test strategy, and change risk. It records full lifecycle evidence and runs every configured gate. Run focused commands only to debug a concrete problem. Use /review only when policy requires it. Publish only the verified tree. Deployment approval remains in the dashboard.',
     },
   );
   const result = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
@@ -138,7 +160,7 @@ export function createChatServer(api: ChatApi) {
     'sdlc_start',
     {
       description:
-        'Start or resume one governed run in the current checkout during native Plan mode. Returns only bounded relevant company context, repository rules, and gate IDs.',
+        'Start or resume one governed run in the current checkout during native Plan mode. Returns bounded company context and implementation rules.',
       inputSchema: {
         workspaceRoot: z.string().min(1),
         prompt: z.string().min(10).max(100_000),
@@ -179,13 +201,12 @@ export function createChatServer(api: ChatApi) {
           repository: `${repository.owner}/${repository.repo}`,
           startingCommit: created.run.workspace.headSha,
           existingChanges: created.run.workspace.changes,
-          policy: {
-            version: created.run.policy.version,
+          rules: {
             standards: created.run.policy.standards,
             protectedPaths: created.run.policy.protectedPaths,
-            gates: created.run.policy.checks.map(({ id, label, kind }) => ({ id, label, kind })),
-            review: created.run.policy.review,
-            testEvidence: created.run.policy.testEvidence,
+            testPaths: created.run.policy.testEvidence.requiredForSourceChanges
+              ? created.run.policy.testEvidence.testPaths
+              : [],
           },
           context: created.run.context,
         };
@@ -196,27 +217,23 @@ export function createChatServer(api: ChatApi) {
     'sdlc_verify',
     {
       description:
-        'Record the accepted specification on the first call and run all configured gates in the current checkout. On repair calls, omit specification. Returns only failures or a compact pass summary.',
+        'Record a compact accepted lifecycle checkpoint on the first call and run all configured gates. Omit the checkpoint on repairs. Returns only failures or a compact pass summary.',
       inputSchema: {
         ...runInput,
         workspaceRoot: z.string().min(1),
-        specification: specificationInputSchema.optional(),
+        checkpoint: checkpointInputSchema.optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ runId, workspaceRoot, specification }, extra) =>
+    ({ runId, workspaceRoot, checkpoint }, extra) =>
       protect(async () => {
         let detail = await api.request<Detail>(`/api/runs/${runId}`);
         if (detail.run.phase === 'planning') {
-          if (!specification) throw new Error('The first verification requires the accepted specification');
-          await api.request<Run>(`/api/runs/${runId}/specification`, {
-            ...specification,
-            plan: { source: 'codex-plan-mode', ...specification.plan },
-            requirements: bindAcceptanceEvidence(specification.requirements, detail.run.policy),
-          });
+          if (!checkpoint) throw new Error('The first verification requires the accepted lifecycle checkpoint');
+          await api.request<Run>(`/api/runs/${runId}/specification`, expandCheckpoint(checkpoint, detail.run.policy));
           detail = await api.request<Detail>(`/api/runs/${runId}`);
-        } else if (specification) {
-          throw new Error('Specification is already recorded; omit it on repair verification');
+        } else if (checkpoint) {
+          throw new Error('Lifecycle checkpoint is already recorded; omit it on repair verification');
         }
         if (detail.run.phase !== 'coding') throw new Error(`Run is not ready for verification (${detail.run.step})`);
 

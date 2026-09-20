@@ -80,7 +80,8 @@ describe('Codex chat integration', () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
 
-    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    const tools = (await client.listTools()).tools;
+    const names = tools.map((tool) => tool.name);
     expect(names).toEqual(['sdlc_start', 'sdlc_verify', 'sdlc_review', 'sdlc_publish', 'sdlc_status']);
     expect(names).not.toEqual(
       expect.arrayContaining([
@@ -94,6 +95,7 @@ describe('Codex chat integration', () => {
       ]),
     );
     expect(names.some((name) => name.includes('approv'))).toBe(false);
+    expect(Buffer.byteLength(JSON.stringify(tools))).toBeLessThan(5_000);
 
     const call = async (name: string, args: Record<string, unknown>, options?: Parameters<Client['callTool']>[2]) => {
       const response = await client.callTool({ name, arguments: args }, undefined, options);
@@ -105,15 +107,6 @@ describe('Codex chat integration', () => {
         data = { error: content[0].text };
       }
       return { error: response.isError, data };
-    };
-    const plan = {
-      scope: 'Task priorities',
-      steps: ['add validation', 'test behavior'],
-      dependencies: [],
-      estimatedEffort: 'one hour',
-      costEstimate: 'one developer hour',
-      schedule: ['implementation', 'verification'],
-      risks: [],
     };
     const input = { workspaceRoot: project, prompt: 'Add task priorities with validation', mode: 'validation' };
     const first = await call('sdlc_start', input);
@@ -128,37 +121,19 @@ describe('Codex chat integration', () => {
     expect((await call('sdlc_start', { ...input, prompt: 'Make an unrelated change' })).error).toBe(true);
 
     const runId = first.data.runId;
-    const specification = {
-      plan,
-      requirements: {
-        summary: 'Validated task priorities',
-        criteria: [
-          {
-            id: 'AC-1',
-            description: 'Configured verification passes',
-            category: 'functional',
-          },
-        ],
-        nonGoals: [],
-        assumptions: [],
-        risks: [],
-        clarification: null,
-      },
-      design: {
-        architecture: 'Existing module',
-        apiContracts: [],
-        dataChanges: [],
-        uiBehavior: [],
-        security: ['Reject unknown values'],
-        compatibility: 'Backward compatible',
-        testStrategy: 'Run configured unit gate',
-      },
+    const checkpoint = {
+      planSummary: 'Add validated task priorities to the existing module.',
+      planSteps: ['add validation', 'test behavior'],
+      requirementsSummary: 'Validated task priorities',
+      acceptanceCriteria: ['Configured priority verification passes'],
+      designSummary: 'Extend the existing module without changing unrelated behavior.',
+      testStrategy: 'Run the configured unit gate.',
       risk: { level: 'high', rationale: 'Changes validation behavior' },
     };
     const progress: string[] = [];
     const verified = await call(
       'sdlc_verify',
-      { runId, workspaceRoot: project, specification },
+      { runId, workspaceRoot: project, checkpoint },
       { onprogress: (update) => progress.push(update.message || '') },
     );
     expect(verified.data.status).toBe('needs_review');

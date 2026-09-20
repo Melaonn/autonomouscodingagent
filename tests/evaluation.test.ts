@@ -99,6 +99,12 @@ function trials(count: number, baselineQuality: number, harnessQuality: number, 
 }
 
 describe('paired harness evaluation', () => {
+  it('does not allow experiments to weaken the 50 percent efficiency target', () => {
+    const candidate = experiment(5);
+    candidate.thresholds.tokenReductionTarget = 0.49;
+    expect(evaluationExperimentSchema.safeParse(candidate).success).toBe(false);
+  });
+
   it('parses exact Codex JSONL usage and completed tool events', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sdlc-eval-'));
     cleanup.push(root);
@@ -162,13 +168,28 @@ describe('paired harness evaluation', () => {
   });
 
   it('accepts lower usage only when quality remains non-inferior', () => {
-    const report = buildEvaluationReport(experiment(5), trials(5, 1, 1, 0.8));
+    const report = buildEvaluationReport(experiment(5), trials(5, 1, 1, 0.5));
     expect(report.verdict).toBe('beneficial');
-    expect(report.claim).toContain('token usage');
+    expect(report.claim).toContain('total and uncached token usage');
+    expect(report.usage.targetReduction).toBe(0.5);
+    expect(report.usage.targetMet).toBe(true);
+  });
+
+  it('does not claim efficiency by reducing only cached-token-heavy totals', () => {
+    const measured = trials(5, 1, 1, 0.4);
+    for (const trial of measured) {
+      trial.baseline.usage!.uncachedTokens = 100;
+      trial.harness.usage!.uncachedTokens = 80;
+    }
+    const report = buildEvaluationReport(experiment(5), measured);
+    expect(report.usage.totalTokenRatio).toBe(0.4);
+    expect(report.usage.uncachedTokenRatio).toBe(0.8);
+    expect(report.usage.targetMet).toBe(false);
+    expect(report.verdict).toBe('inconclusive');
   });
 
   it('does not claim efficiency when an active turn has no usage measurement', () => {
-    const measured = trials(5, 1, 1, 0.8);
+    const measured = trials(5, 1, 1, 0.5);
     measured[0].harness.usage!.unmeteredTurns = 1;
     const report = buildEvaluationReport(experiment(5), measured);
     expect(report.verdict).toBe('inconclusive');
