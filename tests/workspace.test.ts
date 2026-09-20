@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { executeCheck, inspectWorkspace } from '../apps/server/src/workspace.js';
+import { executeCheck, inspectWorkspace, lockfilesMatch } from '../apps/server/src/workspace.js';
 
 const runFile = promisify(execFile);
 const directories: string[] = [];
@@ -14,6 +14,25 @@ afterEach(async () => {
 });
 
 describe('native workspace evidence', () => {
+  it('reuses dependencies only when the installed lock exactly matches', () => {
+    const lock = {
+      packages: {
+        '': { version: '1.0.0' },
+        'node_modules/example': { version: '2.0.0', integrity: 'sha512-safe' },
+      },
+    };
+    expect(
+      lockfilesMatch(lock, {
+        packages: { 'node_modules/example': { version: '2.0.0', integrity: 'sha512-safe' } },
+      }),
+    ).toBe(true);
+    expect(
+      lockfilesMatch(lock, {
+        packages: { 'node_modules/example': { version: '2.0.1', integrity: 'sha512-safe' } },
+      }),
+    ).toBe(false);
+  });
+
   it('keeps the verified tree stable across temporary reports and an equivalent commit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sdlc-workspace-'));
     directories.push(root);

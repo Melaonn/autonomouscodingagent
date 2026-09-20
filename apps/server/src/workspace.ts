@@ -116,6 +116,32 @@ async function npmInstallCache(root: string) {
   return { fingerprint, marker };
 }
 
+type NpmLock = { packages?: Record<string, { version?: string; integrity?: string }> };
+
+export function lockfilesMatch(lock: NpmLock, installed: NpmLock) {
+  const expected = Object.entries(lock.packages || {}).filter(([path]) => path.length > 0);
+  const actual = Object.entries(installed.packages || {});
+  if (expected.length !== actual.length) return false;
+  return expected.every(([path, dependency]) => {
+    const candidate = installed.packages?.[path];
+    return candidate?.version === dependency.version && candidate?.integrity === dependency.integrity;
+  });
+}
+
+async function validInstalledNpmTree(root: string) {
+  const [lockText, installedText] = await Promise.all([
+    readFile(resolve(root, 'package-lock.json'), 'utf8').catch(() => ''),
+    readFile(resolve(root, 'node_modules', '.package-lock.json'), 'utf8').catch(() => ''),
+  ]);
+  if (!lockText || !installedText) return false;
+  try {
+    if (!lockfilesMatch(JSON.parse(lockText) as NpmLock, JSON.parse(installedText) as NpmLock)) return false;
+  } catch {
+    return false;
+  }
+  return (await execute('npm', ['ls', '--all', '--json'], root, 120)).exitCode === 0;
+}
+
 async function candidateSources(root: string) {
   const files = (await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']))
     .split('\0')
@@ -263,15 +289,22 @@ export async function executeCheck(root: string, command: CheckCommand): Promise
       : undefined;
   if (installCache) {
     const stored = await readFile(installCache.marker, 'utf8').catch(() => '');
-    if (stored === installCache.fingerprint)
+    const valid = stored === installCache.fingerprint || (await validInstalledNpmTree(root));
+    if (valid) {
+      if (stored !== installCache.fingerprint) {
+        await mkdir(dirname(installCache.marker), { recursive: true });
+        await writeFile(installCache.marker, installCache.fingerprint, 'utf8');
+      }
       return {
         exitCode: 0,
-        stdout: 'Reused dependency installation; manifests, runtime, platform, and architecture are unchanged.',
+        stdout:
+          'Reused dependency installation after validating lockfile versions, integrity metadata, and the installed tree.',
         stderr: '',
         durationMs: 0,
         files: {},
         cached: true,
       };
+    }
   }
   let reportPath: string | undefined;
   let previousReport: Buffer | undefined;
