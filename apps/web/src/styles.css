@@ -417,17 +417,6 @@ nav button.selected::before {
   color: var(--ink);
 }
 
-.help-link {
-  display: inline-block;
-  color: var(--accent-strong);
-  font-size: 12px;
-  margin-top: 10px;
-  font-weight: 550;
-}
-.help-link:hover {
-  text-decoration: underline;
-}
-
 /* ---------- panels ---------- */
 
 .panel {
@@ -941,17 +930,6 @@ input::placeholder,
 textarea::placeholder {
   color: var(--muted);
   opacity: 0.75;
-}
-
-.inline-secret {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-  max-width: 640px;
-}
-.inline-secret input {
-  flex: 1;
-  min-width: 220px;
 }
 
 .error {
@@ -2106,6 +2084,16 @@ textarea::placeholder {
   margin: 0;
   max-width: 640px;
 }
+.setup-copy > .button {
+  margin-top: 12px;
+}
+.setup-copy .setup-detail {
+  margin-top: 10px;
+  line-height: 1.9;
+}
+.setup-detail code {
+  overflow-wrap: anywhere;
+}
 
 .device-login {
   display: flex;
@@ -2821,9 +2809,6 @@ textarea::placeholder {
   }
   .setup-card > div:last-child {
     grid-column: 2;
-  }
-  .inline-secret {
-    display: grid;
   }
   .device-login {
     width: 100%;

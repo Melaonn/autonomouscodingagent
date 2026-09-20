@@ -4,8 +4,9 @@ export class ChatClient {
   private csrf = '';
   private loginTask?: Promise<void>;
   readonly url: string;
+  private readonly localToken: string;
 
-  constructor(url: string) {
+  constructor(url: string, localToken = process.env.SDLC_CHAT_TOKEN || '') {
     const parsed = new URL(url);
     if (
       parsed.protocol !== 'http:' ||
@@ -19,12 +20,14 @@ export class ChatClient {
       throw new Error('SDLC chat requires a loopback HTTP URL, such as http://127.0.0.1:4310');
     }
     this.url = parsed.origin;
+    this.localToken = localToken;
   }
 
   private async login() {
     const response = await fetch(`${this.url}/api/me`, {
       redirect: 'error',
       signal: AbortSignal.timeout(15_000),
+      headers: this.localToken ? { authorization: `Bearer ${this.localToken}` } : undefined,
     });
     if (!response.ok) throw new Error(`Harness session failed (${response.status}). Check your local setup.`);
     this.cookie =

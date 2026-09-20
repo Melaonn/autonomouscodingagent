@@ -9,6 +9,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createChatServer } from '../apps/server/src/chat-mcp.js';
 import { ChatClient } from '../apps/server/src/chat-client.js';
 import { buildApi } from '../apps/server/src/api.js';
+import { config } from '../apps/server/src/config.js';
 import { RunService } from '../apps/server/src/run-service.js';
 import { Store } from '../apps/server/src/store.js';
 import { repositorySchema, type Repository } from '../shared/types.js';
@@ -19,6 +20,7 @@ const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 async function workspace() {
@@ -36,6 +38,14 @@ async function workspace() {
 
 describe('Codex chat integration', () => {
   it('governs the existing checkout through one native Codex lifecycle without exposing approval', async () => {
+    const localMcpToken = 'local-mcp-test-token-that-is-at-least-32-characters';
+    const originalLocalMcpToken = config.localMcpToken;
+    config.localMcpToken = localMcpToken;
+    cleanup.push(async () => {
+      config.localMcpToken = originalLocalMcpToken;
+    });
+    vi.stubEnv('GITHUB_CLIENT_ID', 'oauth-client');
+    vi.stubEnv('GITHUB_CLIENT_SECRET', 'oauth-secret');
     const project = await workspace();
     const store = await Store.open();
     cleanup.push(() => store.close());
@@ -71,7 +81,9 @@ describe('Codex chat integration', () => {
       body: JSON.stringify({ password: 'unused' }),
     });
     expect(removedPasswordLogin.status).toBe(404);
-    const api = new ChatClient(url);
+    const browserSession = await fetch(`${url}/api/me`);
+    expect((await browserSession.json()).user).toBeNull();
+    const api = new ChatClient(url, localMcpToken);
     const server = createChatServer(api);
     cleanup.push(() => server.close());
     const client = new Client({ name: 'test-codex', version: '1' });

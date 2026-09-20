@@ -5,6 +5,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $harnessRoot = $PSScriptRoot
 $nodePath = (Get-Command node -ErrorAction Stop).Source
+$environmentFile = Join-Path $harnessRoot '.env'
+if (-not (Test-Path -LiteralPath $environmentFile)) {
+  throw 'Run start.ps1 once before connecting Codex.'
+}
+$localTokenLine = Get-Content -LiteralPath $environmentFile | Where-Object { $_ -match '^LOCAL_MCP_TOKEN=' } | Select-Object -Last 1
+$localMcpToken = if ($localTokenLine) { $localTokenLine.Substring('LOCAL_MCP_TOKEN='.Length).Trim() } else { '' }
+if ($localMcpToken.Length -lt 32) {
+  throw 'LOCAL_MCP_TOKEN is missing. Run start.ps1 again, then reconnect Codex.'
+}
 
 Push-Location $harnessRoot
 try {
@@ -44,6 +53,7 @@ $filtered.Add('tool_timeout_sec = 3600')
 $filtered.Add('')
 $filtered.Add('[mcp_servers.sdlc.env]')
 $filtered.Add("SDLC_CHAT_URL = $(ConvertTo-TomlString $ServerUrl)")
+$filtered.Add("SDLC_CHAT_TOKEN = $(ConvertTo-TomlString $localMcpToken)")
 [System.IO.File]::WriteAllLines($configPath, $filtered, [System.Text.UTF8Encoding]::new($false))
 
 $instructionsPath = Join-Path $codexHome 'AGENTS.md'

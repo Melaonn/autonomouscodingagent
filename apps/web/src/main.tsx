@@ -37,7 +37,13 @@ type RunBundle = {
   events: { id: number; time: string; kind: string; message: string; phase: Run['phase'] }[];
   artifacts: { id: string; name: string; hash: string; createdAt: string }[];
 };
-type SetupState = { github: boolean; repositories: number };
+type SetupState = {
+  github: boolean;
+  githubOAuth: boolean;
+  githubLogin: string | null;
+  oauthCallback: string;
+  repositories: number;
+};
 type GitHubRepository = {
   name: string;
   fullName: string;
@@ -149,10 +155,14 @@ function Login({ me }: { me: Me }) {
           One request enters. A governed SDLC leaves requirements, code, tests, review, deployment, and maintenance
           evidence behind.
         </p>
-        {me.githubOAuth && (
+        {me.githubOAuth ? (
           <a className="button primary wide" href="/auth/github">
             <Github size={17} /> Continue with GitHub
           </a>
+        ) : (
+          <div className="notice error">
+            <AlertTriangle /> Configure the GitHub OAuth app before signing in.
+          </div>
         )}
         <p className="fine-print">
           Access is restricted to configured team members. Every approval and policy change is audited.
@@ -1411,7 +1421,7 @@ function RepositoriesPage() {
         <section className="panel">
           <Empty
             title="No repository selected"
-            text="Choose one of the repositories allowed by the connected GitHub token."
+            text="Choose one of the repositories authorized through the connected GitHub account."
           />
         </section>
       )}
@@ -1811,9 +1821,7 @@ function KnowledgePage() {
 }
 function SetupPage({ navigate }: { navigate: (page: string) => void }) {
   const [state, setState] = useState<SetupState | null>(null);
-  const [githubToken, setGithubToken] = useState('');
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState('');
   const load = () =>
     api<SetupState>('/api/setup')
       .then(setState)
@@ -1821,20 +1829,6 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
   useEffect(() => {
     load();
   }, []);
-  async function connectGithub(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    setBusy('github');
-    try {
-      await api('/api/setup/github', { method: 'POST', body: JSON.stringify({ token: githubToken }) });
-      setGithubToken('');
-      await load();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy('');
-    }
-  }
   const complete = !!state?.github;
   return (
     <>
@@ -1879,35 +1873,40 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
           <div className="setup-number">2</div>
           <div className="setup-copy">
             <span className="eyebrow">SOURCE CONTROL</span>
-            <h2>Connect GitHub</h2>
-            <p>
-              Paste a fine-grained token for one controlled repository. It is verified and encrypted before storage.
-            </p>
-            {!state?.github && (
-              <form className="inline-secret" onSubmit={connectGithub}>
-                <input
-                  aria-label="GitHub token"
-                  type="password"
-                  required
-                  minLength={20}
-                  value={githubToken}
-                  onChange={(e) => setGithubToken(e.target.value)}
-                  placeholder="github_pat_…"
-                />
-                <button className="button primary" disabled={busy === 'github'}>
-                  <Github />
-                  Verify and connect
-                </button>
-              </form>
+            <h2>GitHub browser authorization</h2>
+            {state?.github ? (
+              <p>
+                Signed in{state.githubLogin ? ` as @${state.githubLogin}` : ''}. GitHub supplied the repository
+                credential through OAuth, and the server stores it encrypted.
+              </p>
+            ) : state?.githubOAuth ? (
+              <>
+                <p>Authorize repository and workflow access through GitHub's official consent screen.</p>
+                <a className="button primary" href="/auth/github">
+                  <Github /> Continue with GitHub
+                </a>
+              </>
+            ) : (
+              <>
+                <p>
+                  Create one GitHub OAuth App, then copy its client ID and secret into <code>.env</code>.
+                </p>
+                <p className="setup-detail">
+                  Homepage URL: <code>{window.location.origin}</code>
+                  <br />
+                  Callback URL: <code>{state?.oauthCallback || `${window.location.origin}/auth/github/callback`}</code>
+                </p>
+                <a
+                  className="button quiet"
+                  href="https://github.com/settings/applications/new"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <Github /> Create GitHub OAuth App
+                </a>
+                <p className="fine-print">Restart the server afterward. No personal access token is required.</p>
+              </>
             )}
-            <a
-              className="help-link"
-              href="https://github.com/settings/personal-access-tokens/new"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Create a GitHub token ↗
-            </a>
           </div>
           <div>{state?.github && <SetupStatus label="Connected" />}</div>
         </section>

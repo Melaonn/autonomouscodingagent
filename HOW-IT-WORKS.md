@@ -14,6 +14,7 @@ flowchart LR
   Checks --> API
   API <--> GitHub[Pull request, required CI, deployment workflows]
   API --> Dashboard[Live SDLC dashboard]
+  Dashboard --> OAuth[GitHub OAuth login and consent]
   Dashboard --> Approval[Human deployment approval]
 ```
 
@@ -48,7 +49,8 @@ Only the dashboard exposes approval. An approved run dispatches the configured G
 - Codex can propose and edit code, but it cannot manufacture passing gate records.
 - The model does not choose verification commands during a run; the versioned repository policy does.
 - Review policy is explicit and auditable. It uses configured globs, change breadth, declared risk, and evidence requirements rather than prompt keyword matching.
-- MCP calls are restricted to loopback and an explicit API allowlist.
+- Browser users authenticate through GitHub OAuth. The OAuth state is bound to an HTTP-only cookie, allowed users are checked before session creation, and the repository credential is encrypted at rest.
+- MCP calls are restricted to loopback, authenticated with a separate generated local-machine secret, and limited to an explicit API allowlist.
 - GitHub and deployment credentials stay in the server-side secret store and never enter MCP tool results.
 - Deployment approval is unavailable to the Codex MCP tools.
 - Artifacts and company context are hashed and associated with the candidate tree and policy version.

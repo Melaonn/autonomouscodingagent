@@ -29,10 +29,10 @@ import { profiles } from './profiles.js';
 import {
   availableRepositories,
   githubConfigured,
+  githubOAuthConfigured,
   oauthUrl,
   oauthUser,
   setRepositoryToken,
-  validateRepositoryToken,
 } from './github.js';
 import { report } from './gates.js';
 import { inspectIntegration } from './mcp.js';
@@ -47,7 +47,26 @@ const error = (statusCode: number, message: string) => Object.assign(new Error(m
 const roles: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
 export async function buildApi(store: Store, runs: RunService) {
   const app = Fastify({
-    logger: { redact: ['req.headers.authorization', 'req.headers.cookie', 'body.token'] },
+    logger: {
+      redact: ['req.headers.authorization', 'req.headers.cookie'],
+      serializers: {
+        req(value: unknown) {
+          const request = value as {
+            method?: string;
+            url?: string;
+            headers?: { host?: string };
+            socket?: { remoteAddress?: string; remotePort?: number };
+          };
+          return {
+            method: request.method,
+            url: request.url?.startsWith('/auth/github/callback') ? '/auth/github/callback' : request.url,
+            host: request.headers?.host,
+            remoteAddress: request.socket?.remoteAddress,
+            remotePort: request.socket?.remotePort,
+          };
+        },
+      },
+    },
     bodyLimit: 20 * 1024 * 1024,
   });
   await app.register(cookie, { secret: config.sessionSecret });
@@ -65,6 +84,10 @@ export async function buildApi(store: Store, runs: RunService) {
     if (sid) {
       const session = await store.session(sid);
       if (session) {
+        if (session.user.login === 'local-operator' && githubOAuthConfigured()) {
+          await store.deleteSession(sid);
+          return;
+        }
         req.user = session.user;
         req.sessionId = sid;
         req.csrf = session.csrf;
@@ -100,41 +123,77 @@ export async function buildApi(store: Store, runs: RunService) {
     });
     return { user, csrf };
   };
+  const oauthCallback = new URL('/auth/github/callback', config.publicUrl).toString();
+  const localMcpRequest = (req: FastifyRequest) => {
+    const authorization = req.headers.authorization || '';
+    const prefix = 'Bearer ';
+    return (
+      !!config.localMcpToken &&
+      authorization.startsWith(prefix) &&
+      equalSecret(authorization.slice(prefix.length), config.localMcpToken)
+    );
+  };
   app.get('/auth/github', async (_req, reply) => {
+    if (!githubOAuthConfigured()) throw error(503, 'GitHub OAuth is not configured');
     const state = nonce();
     reply.setCookie('oauth_state', state, {
       httpOnly: true,
-      secure: config.production,
+      secure: config.secureCookies,
       sameSite: 'lax',
       path: '/auth',
       maxAge: 600,
     });
-    return reply.redirect(oauthUrl(state));
+    return reply.redirect(oauthUrl(state, oauthCallback));
   });
   app.get('/auth/github/callback', async (req, reply) => {
-    const query = z.object({ code: z.string(), state: z.string() }).parse(req.query);
+    const query = z
+      .object({
+        code: z.string().optional(),
+        state: z.string().optional(),
+        error: z.string().optional(),
+        error_description: z.string().optional(),
+      })
+      .parse(req.query);
+    if (query.error) throw error(400, query.error_description || `GitHub authorization failed: ${query.error}`);
+    if (!query.code || !query.state) throw error(400, 'GitHub authorization response is incomplete');
     if (!req.cookies.oauth_state || !equalSecret(req.cookies.oauth_state, query.state))
       throw error(400, 'OAuth state rejected');
-    const gh = await oauthUser(query.code);
+    const gh = await oauthUser(query.code, oauthCallback);
+    const missingScopes = ['repo', 'workflow'].filter((scope) => !gh.scopes.includes(scope));
+    if (missingScopes.length)
+      throw error(403, `GitHub authorization is missing required access: ${missingScopes.join(', ')}`);
     const allowed = (process.env.GITHUB_ALLOWED_USERS || '')
       .split(',')
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
-    if (!allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted');
-    const admins = (process.env.GITHUB_ADMIN_USERS || '').split(',').map((x) => x.trim().toLowerCase());
-    await setSession(reply, { login: gh.login, role: admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator' });
+    if (allowed.length && !allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted');
+    const admins = (process.env.GITHUB_ADMIN_USERS || '')
+      .split(',')
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean);
+    await store.setSecret('github-oauth-token', sealSecret(gh.token, config.sessionSecret));
+    setRepositoryToken(gh.token);
+    await store.audit(gh.login, 'github.oauth.connect', { scopes: gh.scopes });
+    await setSession(reply, {
+      login: gh.login,
+      role: !admins.length || admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator',
+    });
     reply.clearCookie('oauth_state', { path: '/auth' });
     return reply.redirect(config.publicUrl);
   });
   app.get('/api/me', async (req, reply) => {
-    if (!req.user && !config.production && ['127.0.0.1', '::1'].includes(req.ip)) {
+    if (!req.user && localMcpRequest(req)) {
+      const session = await setSession(reply, { login: 'codex-mcp', role: 'admin' });
+      return { ...session, githubOAuth: githubOAuthConfigured() };
+    }
+    if (!req.user && !githubOAuthConfigured() && !config.production && ['127.0.0.1', '::1'].includes(req.ip)) {
       const session = await setSession(reply, { login: 'local-operator', role: 'admin' });
-      return { ...session, githubOAuth: !!process.env.GITHUB_CLIENT_ID };
+      return { ...session, githubOAuth: false };
     }
     return {
       user: req.user || null,
       csrf: req.csrf || '',
-      githubOAuth: !!process.env.GITHUB_CLIENT_ID,
+      githubOAuth: githubOAuthConfigured(),
     };
   });
   app.post('/api/logout', async (req, reply) => {
@@ -152,17 +211,14 @@ export async function buildApi(store: Store, runs: RunService) {
     };
   });
   app.get('/api/setup', async (req) => {
-    requireRole(req, 'admin');
-    return { github: githubConfigured(), repositories: (await store.repositories()).length };
-  });
-  app.post('/api/setup/github', async (req) => {
     const actor = requireRole(req, 'admin');
-    const { token } = z.object({ token: z.string().min(20).max(500) }).parse(req.body);
-    const login = await validateRepositoryToken(token);
-    await store.setSecret('github-token', sealSecret(token, config.sessionSecret));
-    setRepositoryToken(token);
-    await store.audit(actor.login, 'setup.github.connect', { login });
-    return { connected: true, login };
+    return {
+      github: githubConfigured(),
+      githubOAuth: githubOAuthConfigured(),
+      githubLogin: actor.login === 'codex-mcp' || actor.login === 'local-operator' ? null : actor.login,
+      oauthCallback,
+      repositories: (await store.repositories()).length,
+    };
   });
   app.get('/api/github/repositories', async (req) => {
     requireRole(req, 'admin');

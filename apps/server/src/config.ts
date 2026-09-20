@@ -12,12 +12,19 @@ export const config = {
   dataDir: resolve(process.env.DATA_DIR || '../../.runtime'),
   databaseUrl: process.env.DATABASE_URL,
   sessionSecret: process.env.SESSION_SECRET || randomBytes(32).toString('hex'),
+  localMcpToken: process.env.LOCAL_MCP_TOKEN || '',
 };
 export function validateConfig() {
   if (config.production && (!config.databaseUrl || !process.env.SESSION_SECRET))
     throw new Error('Production requires DATABASE_URL and SESSION_SECRET');
   if (config.production && (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET))
     throw new Error('Production requires GitHub OAuth');
+  if (config.production && (!process.env.GITHUB_ALLOWED_USERS || !process.env.GITHUB_ADMIN_USERS))
+    throw new Error('Production requires GitHub user and administrator allowlists');
+  if (config.production && config.localMcpToken.length < 32)
+    throw new Error('Production requires LOCAL_MCP_TOKEN with at least 32 characters');
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length < 32)
     throw new Error('SESSION_SECRET must have at least 32 characters');
+  if (config.localMcpToken && config.localMcpToken.length < 32)
+    throw new Error('LOCAL_MCP_TOKEN must have at least 32 characters');
 }

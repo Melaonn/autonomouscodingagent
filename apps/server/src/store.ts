@@ -287,6 +287,9 @@ export class Store {
   async secret(id: string) {
     return (await this.db.query<{ value: string }>('SELECT value FROM secrets WHERE id=$1', [id])).rows[0]?.value;
   }
+  async deleteSecret(id: string) {
+    await this.db.query('DELETE FROM secrets WHERE id=$1', [id]);
+  }
   close() {
     return this.closer();
   }

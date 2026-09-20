@@ -114,4 +114,12 @@ describe('durable store', () => {
     expect(documents[0]?.excerpt).toContain('tenant');
     expect(documents[0]?.excerpt).toContain('isolation');
   });
+
+  it('removes obsolete credentials during authentication migrations', async () => {
+    const store = await Store.open();
+    stores.push(store);
+    await store.setSecret('old-credential', 'encrypted-value');
+    await store.deleteSecret('old-credential');
+    await expect(store.secret('old-credential')).resolves.toBeUndefined();
+  });
 });

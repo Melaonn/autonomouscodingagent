@@ -1,10 +1,28 @@
 import { expect, test } from '@playwright/test';
+
+test('GitHub is the default dashboard login when OAuth is configured', async ({ page }) => {
+  await page.route('**/api/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ user: null, csrf: '', githubOAuth: true }),
+    }),
+  );
+  await page.goto('/');
+  const login = page.getByRole('link', { name: 'Continue with GitHub' });
+  await expect(login).toBeVisible();
+  await expect(login).toHaveAttribute('href', '/auth/github');
+});
+
 test('local operator reaches native Codex and GitHub onboarding', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Connect and start' })).toBeVisible();
   await expect(page.getByText('Connected', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Use your Codex app or CLI' })).toBeVisible();
   await expect(page.getByText('There is no second Codex login')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'GitHub browser authorization' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Create GitHub OAuth App' })).toBeVisible();
+  await expect(page.getByLabel('GitHub token')).toHaveCount(0);
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Work in progress' })).toBeVisible();
   await expect(page.getByText('See what Codex is doing, what passed, and when you need to act.')).toBeVisible();

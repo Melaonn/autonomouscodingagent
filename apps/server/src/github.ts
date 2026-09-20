@@ -8,7 +8,7 @@ export function setRepositoryToken(token: string) {
 }
 const base64url = (value: string | Buffer) => Buffer.from(value).toString('base64url');
 async function installationToken() {
-  if (configuredToken || process.env.GITHUB_TOKEN) return configuredToken || process.env.GITHUB_TOKEN!;
+  if (configuredToken) return configuredToken;
   if (!process.env.GITHUB_APP_ID || !process.env.GITHUB_INSTALLATION_ID || !process.env.GITHUB_APP_PRIVATE_KEY_FILE)
     throw new Error('GitHub repository credentials are not configured');
   if (cached && cached.expires > Date.now() + 60_000) return cached.token;
@@ -156,7 +156,7 @@ export async function workflowStatus(repo: Repository, workflow: string, sha: st
     run,
   };
 }
-export async function oauthUser(code: string) {
+export async function oauthUser(code: string, redirectUri: string) {
   if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET)
     throw new Error('GitHub OAuth is not configured');
   const response = await fetch('https://github.com/login/oauth/access_token', {
@@ -166,23 +166,29 @@ export async function oauthUser(code: string) {
       client_id: process.env.GITHUB_CLIENT_ID,
       client_secret: process.env.GITHUB_CLIENT_SECRET,
       code,
+      redirect_uri: redirectUri,
     }),
   });
-  const auth = (await response.json()) as { access_token?: string; error_description?: string };
+  if (!response.ok) throw new Error(`GitHub OAuth exchange failed (${response.status})`);
+  const auth = (await response.json()) as {
+    access_token?: string;
+    scope?: string;
+    token_type?: string;
+    error_description?: string;
+  };
   if (!auth.access_token) throw new Error(auth.error_description || 'OAuth exchange failed');
   const userResponse = await fetch('https://api.github.com/user', { headers: headers(auth.access_token) });
   if (!userResponse.ok) throw new Error('Unable to read GitHub user');
-  return userResponse.json() as Promise<{ login: string }>;
-}
-export async function validateRepositoryToken(token: string) {
-  const response = await fetch('https://api.github.com/user', {
-    headers: headers(token),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) throw new Error(`GitHub rejected this token (${response.status})`);
-  const user = (await response.json()) as { login: string };
-  if (!user.login) throw new Error('GitHub token did not identify a user');
-  return user.login;
+  const user = (await userResponse.json()) as { login?: string };
+  if (!user.login) throw new Error('GitHub OAuth did not identify a user');
+  return {
+    login: user.login,
+    token: auth.access_token,
+    scopes: (auth.scope || '')
+      .split(',')
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  };
 }
 export async function availableRepositories() {
   const repositories = await api<
@@ -205,13 +211,21 @@ export async function availableRepositories() {
       language: repo.language,
     }));
 }
-export function oauthUrl(state: string) {
-  return `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(process.env.GITHUB_CLIENT_ID || '')}&scope=read:user&state=${encodeURIComponent(state)}`;
+export function oauthUrl(state: string, redirectUri: string) {
+  const query = new URLSearchParams({
+    client_id: process.env.GITHUB_CLIENT_ID || '',
+    redirect_uri: redirectUri,
+    scope: 'read:user repo workflow',
+    state,
+  });
+  return `https://github.com/login/oauth/authorize?${query.toString()}`;
+}
+export function githubOAuthConfigured() {
+  return !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
 }
 export function githubConfigured() {
   return !!(
     configuredToken ||
-    process.env.GITHUB_TOKEN ||
     (process.env.GITHUB_APP_ID && process.env.GITHUB_INSTALLATION_ID && process.env.GITHUB_APP_PRIVATE_KEY_FILE)
   );
 }

@@ -6,7 +6,7 @@ There is no Docker worker, second Codex login, repository clone, or hidden codin
 
 ## Quick start on Windows
 
-Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token with access to the repository you want to test.
+Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub account.
 
 1. Start the dashboard and API in PowerShell:
 
@@ -14,11 +14,11 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
    .\start.ps1
    ```
 
-   The first run creates `.env`, installs dependencies, builds the app, and opens `http://localhost:4310`. Local access signs in automatically because the server listens only on your computer. Keep this terminal open.
+   On first use, the script opens GitHub's OAuth App page and shows the exact homepage and callback URLs. Create the app and paste its client ID, client secret, and your GitHub username into the guided prompts. These identify the application; you never create or paste a personal access token. The script then installs dependencies, builds the app, and opens `http://localhost:4310`. Keep this terminal open.
 
-2. In the dashboard, connect the GitHub token. You do not need to create repository policy by hand.
+2. Select **Continue with GitHub**. GitHub's consent page signs you into the dashboard and grants repository and workflow access. The returned OAuth credential is encrypted in the server-side store and never enters Codex context.
 
-3. Connect the harness to your existing Codex app and CLI configuration:
+3. Connect the harness to your existing Codex app and CLI configuration from another PowerShell window:
 
    ```powershell
    .\connect-codex.ps1
