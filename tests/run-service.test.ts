@@ -42,6 +42,7 @@ describe('validation-only lifecycle', () => {
       createdAt: new Date().toISOString(),
       deployment: {
         enabled: false,
+        target: '',
         environment: 'staging',
         workflow: 'deploy.yml',
         rollbackWorkflow: 'rollback.yml',

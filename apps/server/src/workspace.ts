@@ -3,6 +3,7 @@ import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import spawn from 'cross-spawn';
+import YAML from 'yaml';
 import type { CheckCommand, JobResult, WorkspaceState } from '../../../shared/types.js';
 
 const outputLimit = 256_000;
@@ -296,9 +297,53 @@ function reportFile(root: string, path: string) {
   return file;
 }
 
+async function builtinSetupCheck(
+  root: string,
+  action: string,
+  path: string,
+  expectedJob?: string,
+  expectedTrigger?: string,
+): Promise<JobResult> {
+  const started = Date.now();
+  if (!['file', 'github-workflow'].includes(action) || !path)
+    return {
+      exitCode: 127,
+      stdout: '',
+      stderr: 'Unknown SDLC setup validation',
+      durationMs: Date.now() - started,
+      files: {},
+    };
+  const content = await readFile(reportFile(root, path), 'utf8').catch(() => '');
+  let problem = content.trim() ? '' : `Required setup file is missing or empty: ${path}`;
+  if (!problem && action === 'github-workflow') {
+    try {
+      const workflow = YAML.parse(content) as { on?: unknown; jobs?: Record<string, unknown> } | null;
+      const triggers = workflow?.on;
+      const hasTrigger =
+        !expectedTrigger ||
+        triggers === expectedTrigger ||
+        (Array.isArray(triggers) && triggers.includes(expectedTrigger)) ||
+        (typeof triggers === 'object' && triggers !== null && expectedTrigger in triggers);
+      if (!workflow?.jobs || !Object.keys(workflow.jobs).length) problem = `${path} has no workflow jobs`;
+      else if (expectedJob && !workflow.jobs[expectedJob]) problem = `${path} has no ${expectedJob} job`;
+      else if (!hasTrigger) problem = `${path} does not trigger on ${expectedTrigger}`;
+    } catch (error) {
+      problem = `${path} is not valid YAML: ${error instanceof Error ? error.message : 'parse failed'}`;
+    }
+  }
+  return {
+    exitCode: problem ? 1 : 0,
+    stdout: problem ? '' : `Validated setup file: ${path}`,
+    stderr: problem,
+    durationMs: Date.now() - started,
+    files: {},
+  };
+}
+
 export async function executeCheck(root: string, command: CheckCommand): Promise<JobResult> {
   const [executable, ...args] = command.argv;
   if (executable === '@sdlc/security') return builtinSecurityCheck(root, args[0], command.reportPath);
+  if (executable === '@sdlc/setup') return builtinSetupCheck(root, args[0], args[1], args[2], args[3]);
   const installCache =
     command.kind === 'setup' && executable === 'npm' && args.length === 1 && args[0] === 'ci'
       ? await npmInstallCache(root)

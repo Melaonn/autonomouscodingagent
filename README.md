@@ -30,7 +30,9 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
 
    > Build an audit history page with filtering and pagination.
 
-On the first prompt for a repository, Codex detects the Git remote, base branch, TypeScript or Python stack, package manager, scripts, test layout, GitHub workflows, source/test paths, and deployment clues. It saves an auto-filled repository card and asks you to confirm the uncertain choices. Review or correct the fields in the dashboard, or accept the detected setup in chat. Deployment stays disabled until it is explicitly configured. Later prompts reuse the confirmed versioned policy.
+On the first prompt for a repository, Codex detects the Git remote, base branch, TypeScript or Python stack, package manager, scripts, test layout, GitHub workflows, source/test paths, and deployment clues. The dashboard shows each capability as ready, partial, missing, or needing input. Codex asks whether E2E applies, how remote CI should work, and—only when requested—where deployment runs and which health URL proves success.
+
+After confirmation, the same Codex conversation receives a detailed bootstrap contract. It preserves working infrastructure and creates only the gaps: reproducible dependencies, build/lint/type commands, isolated unit/integration/E2E suites with meaningful tests, GitHub Actions CI, and optional target-specific deployment, rollback, and health-check integration. These are ordinary reviewed repository changes, not generated placeholders. Verification runs every resulting command and keeps the repository in `bootstrapping` state until the evidence passes. Later prompts reuse the verified versioned policy and skip this setup cost.
 
 Codex then uses native Plan mode to inspect the repository and ask its normal clarification questions. Choose to implement when the plan is correct. The same conversation uses the `sdlc` MCP tools and existing checkout. Open the dashboard to see what is happening, what comes next, quality evidence, failures, PR and CI status, and any action that needs you.
 
@@ -42,7 +44,7 @@ The agent-facing path exposes five tools. A normal low-risk delivery uses three 
 
 ## What happens after the prompt
 
-1. **Planning:** native Codex Plan mode calls `sdlc_start` first. A new repository is auto-detected and saved for one-time confirmation; a confirmed repository immediately returns its bounded company context. Codex then inspects the checkout once, asks normal clarification questions, and produces the plan.
+1. **Planning:** native Codex Plan mode calls `sdlc_start` first. A new repository is inventoried and saved for one-time confirmation. The confirmed call returns an executable bootstrap contract, which Codex includes in the native plan with the requested feature. A ready repository immediately returns its bounded company context and skips bootstrap.
 2. **Requirements:** Codex creates measurable acceptance criteria and maps testable criteria to configured checks after product questions are resolved in Plan mode.
 3. **Design:** the first `sdlc_verify` call records a compact plan, requirements, design, test-strategy, and change-risk checkpoint, which the controller expands into the lifecycle record.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.

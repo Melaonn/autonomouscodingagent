@@ -182,8 +182,13 @@ export async function buildApi(store: Store, runs: RunService) {
     const input = repositorySchema.parse(req.body);
     if (input.deployment.enabled) {
       endpoint(input.deployment.healthUrl, !config.production);
+      if (!input.deployment.target.trim()) throw error(400, 'Deployment target is required');
       if (!input.deployment.workflow || !input.deployment.rollbackWorkflow)
         throw error(400, 'Deployment and rollback workflows are required');
+      if (
+        ![input.deployment.workflow, input.deployment.rollbackWorkflow].every((name) => /^[\w.-]+\.ya?ml$/.test(name))
+      )
+        throw error(400, 'Deployment workflow names must be YAML filenames without directories');
     }
     if (!input.requiredCiChecks.length && !input.ciWaiver.trim())
       throw error(400, 'Configure required CI checks or a documented CI waiver');

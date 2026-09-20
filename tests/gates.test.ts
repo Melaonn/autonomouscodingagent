@@ -31,6 +31,7 @@ const policy: Repository = {
   createdAt: new Date().toISOString(),
   deployment: {
     enabled: true,
+    target: 'test staging',
     environment: 'staging',
     workflow: 'deploy.yml',
     rollbackWorkflow: 'rollback.yml',

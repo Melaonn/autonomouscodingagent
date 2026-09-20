@@ -1188,6 +1188,7 @@ function RepositoriesPage() {
     sourcePaths: 'src/**, app/**, apps/**, lib/**, packages/**/src/**',
     testPaths: 'test/**, tests/**, **/__tests__/**, **/*.test.*, **/*.spec.*',
     deploymentEnabled: false,
+    deploymentTarget: '',
     healthUrl: '',
     workflow: 'deploy.yml',
     rollbackWorkflow: 'rollback.yml',
@@ -1200,6 +1201,11 @@ function RepositoriesPage() {
       repository.repo.toLowerCase() === form.repo.toLowerCase(),
   );
   const reviewingDetectedSetup = selectedRepository?.setup?.status === 'needs_confirmation';
+  const detectedSetup =
+    selectedRepository?.setup?.source === 'detected' &&
+    !['ready', 'confirmed'].includes(selectedRepository.setup.status)
+      ? selectedRepository.setup
+      : undefined;
   const selectedFullName = form.owner && form.repo ? `${form.owner}/${form.repo}` : '';
   const selectedIsAvailable = available.some(
     (repository) => repository.fullName.toLowerCase() === selectedFullName.toLowerCase(),
@@ -1246,6 +1252,7 @@ function RepositoriesPage() {
       sourcePaths: (repository.testEvidence?.sourcePaths || []).join(', '),
       testPaths: (repository.testEvidence?.testPaths || []).join(', '),
       deploymentEnabled: repository.deployment.enabled,
+      deploymentTarget: repository.deployment.target || '',
       healthUrl: repository.deployment.healthUrl,
       workflow: repository.deployment.workflow,
       rollbackWorkflow: repository.deployment.rollbackWorkflow,
@@ -1295,12 +1302,12 @@ function RepositoriesPage() {
           setup: selectedRepository?.setup
             ? {
                 ...selectedRepository.setup,
-                status: 'confirmed',
-                confirmedAt: selectedRepository.setup.confirmedAt || new Date().toISOString(),
+                status: reviewingDetectedSetup ? 'reviewed' : selectedRepository.setup.status,
               }
             : undefined,
           deployment: {
             enabled: form.deploymentEnabled,
+            target: form.deploymentTarget,
             environment: form.environment,
             workflow: form.workflow,
             rollbackWorkflow: form.rollbackWorkflow,
@@ -1360,12 +1367,18 @@ function RepositoriesPage() {
               <span className={`stack ${r.stack}`}>
                 {r.stack === 'python' ? 'PY' : r.stack === 'typescript' ? 'TS' : 'CUSTOM'}
               </span>
-              <span className={`badge ${r.setup?.status === 'needs_confirmation' ? 'needs_input' : 'monitoring'}`}>
+              <span
+                className={`badge ${['needs_confirmation', 'reviewed', 'bootstrapping'].includes(r.setup?.status || '') ? 'needs_input' : 'monitoring'}`}
+              >
                 {r.setup?.status === 'needs_confirmation'
                   ? 'review setup'
-                  : r.deployment.enabled
-                    ? 'deploy governed'
-                    : 'PR only'}
+                  : r.setup?.status === 'reviewed'
+                    ? 'start bootstrap'
+                    : r.setup?.status === 'bootstrapping'
+                      ? 'building SDLC'
+                      : r.deployment.enabled
+                        ? 'deploy governed'
+                        : 'PR only'}
               </span>
             </div>
             <h2>{r.name}</h2>
@@ -1374,12 +1387,22 @@ function RepositoriesPage() {
             </p>
             <div className="repo-meta">
               <span>{r.checks.length} quality gates</span>
+              {!!r.setup?.capabilities.length && (
+                <span>
+                  {r.setup.capabilities.filter((item) => ['ready', 'not_applicable'].includes(item.status)).length}/
+                  {r.setup.capabilities.length} SDLC capabilities ready
+                </span>
+              )}
               <span>Policy v{r.version}</span>
               <span>{r.deployment.environment}</span>
             </div>
             <button className="button quiet repo-edit" onClick={() => edit(r)}>
               <Wrench />
-              {r.setup?.status === 'needs_confirmation' ? 'Review detected setup' : 'Edit policy'}
+              {r.setup?.status === 'needs_confirmation'
+                ? 'Review detected setup'
+                : ['reviewed', 'bootstrapping'].includes(r.setup?.status || '')
+                  ? 'View SDLC bootstrap'
+                  : 'Edit policy'}
             </button>
           </article>
         ))}
@@ -1396,7 +1419,7 @@ function RepositoriesPage() {
         <Modal
           title={
             selectedRepository
-              ? reviewingDetectedSetup
+              ? detectedSetup
                 ? 'Review detected project setup'
                 : 'Edit repository policy'
               : 'Add a repository'
@@ -1404,23 +1427,56 @@ function RepositoriesPage() {
           close={() => setOpen(false)}
         >
           <form className="form" onSubmit={save}>
-            {reviewingDetectedSetup && selectedRepository?.setup && (
+            {detectedSetup && (
               <div className="notice warning">
                 <Bot />
                 <div>
                   <strong>Codex filled this from the local checkout</strong>
                   <p>
-                    Confirm the stack, base branch, CI, quality gates, and deployment settings. Saving this form marks
-                    the setup as reviewed.
+                    {detectedSetup.status === 'needs_confirmation'
+                      ? 'Confirm the stack, base branch, CI, quality gates, and deployment settings. Saving marks the details as reviewed; Codex starts the bootstrap from chat.'
+                      : detectedSetup.status === 'reviewed'
+                        ? 'The detected details were reviewed. Start or continue the governed prompt in Codex to create the missing foundations.'
+                        : 'Codex is creating the missing foundations. This inventory remains visible until every configured gate passes.'}
                   </p>
-                  {selectedRepository.setup.evidence.length > 0 && (
-                    <p className="fine-print">Detected: {selectedRepository.setup.evidence.join(' · ')}</p>
+                  {detectedSetup.evidence.length > 0 && (
+                    <p className="fine-print">Detected: {detectedSetup.evidence.join(' · ')}</p>
                   )}
-                  {selectedRepository.setup.warnings.length > 0 && (
-                    <p className="fine-print">Check: {selectedRepository.setup.warnings.join(' · ')}</p>
+                  {detectedSetup.warnings.length > 0 && (
+                    <p className="fine-print">Check: {detectedSetup.warnings.join(' · ')}</p>
                   )}
                 </div>
               </div>
+            )}
+            {detectedSetup && detectedSetup.capabilities.length > 0 && (
+              <section className="setup-inventory">
+                <div>
+                  <h3>Detected SDLC capabilities</h3>
+                  <p className="fine-print">Ready parts are preserved. Codex creates only missing or partial parts.</p>
+                </div>
+                <div className="capability-grid">
+                  {detectedSetup.capabilities.map((item) => (
+                    <article className={`capability ${item.status}`} key={item.id}>
+                      <strong>{item.label}</strong>
+                      <span>{item.status.replace('_', ' ')}</span>
+                      <small>{item.evidence.join(' · ')}</small>
+                    </article>
+                  ))}
+                </div>
+                {detectedSetup.tasks.length > 0 && (
+                  <details>
+                    <summary>{detectedSetup.tasks.length} bootstrap tasks proposed</summary>
+                    <ol className="bootstrap-list">
+                      {detectedSetup.tasks.map((item) => (
+                        <li key={item.id}>
+                          <strong>{item.title}</strong>
+                          <span>{item.reason}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
+              </section>
             )}
             <label>
               GitHub repository
@@ -1595,6 +1651,15 @@ function RepositoriesPage() {
             {form.deploymentEnabled && (
               <>
                 <label>
+                  Deployment target
+                  <input
+                    required
+                    value={form.deploymentTarget}
+                    onChange={(e) => setForm({ ...form, deploymentTarget: e.target.value })}
+                    placeholder="Azure staging, AWS ECS, Vercel, internal platform…"
+                  />
+                </label>
+                <label>
                   Staging health URL
                   <input
                     required
@@ -1629,7 +1694,7 @@ function RepositoriesPage() {
                 Cancel
               </button>
               <button className="button primary">
-                {reviewingDetectedSetup ? 'Save and confirm setup' : 'Save repository'}
+                {reviewingDetectedSetup ? 'Save reviewed setup' : 'Save repository'}
               </button>
             </div>
           </form>
@@ -1852,8 +1917,8 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
             <span className="eyebrow">REPOSITORY POLICY</span>
             <h2>Open your project in Codex</h2>
             <p>
-              The first governed prompt detects the repository, stack, commands, tests, CI, and deployment clues. You
-              only confirm or correct the auto-filled policy.
+              The first governed prompt inventories the repository, asks about uncertain choices, and includes every
+              missing SDLC foundation in the native implementation plan.
             </p>
           </div>
           <div>

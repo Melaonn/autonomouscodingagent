@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { discoverRepository } from '../apps/server/src/repository-discovery.js';
+import { configureRepositoryBootstrap, discoverRepository } from '../apps/server/src/repository-discovery.js';
 import { inspectWorkspace } from '../apps/server/src/workspace.js';
 
 const runFile = promisify(execFile);
@@ -66,11 +66,22 @@ describe('automatic repository setup', () => {
         'lint',
         'typecheck',
         'unit',
+        'integration',
         'e2e',
         'secrets',
         'sast',
-        'dependencies',
+        'dependency-audit',
       ]),
+    );
+    expect(result.repository.setup.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'unit', status: 'ready' }),
+        expect.objectContaining({ id: 'integration', status: 'missing' }),
+        expect.objectContaining({ id: 'ci', status: 'partial' }),
+      ]),
+    );
+    expect(result.repository.setup.tasks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'integration-foundation' })]),
     );
     expect(result.repository.testEvidence.sourcePaths).toContain('src/**');
     expect(result.repository.testEvidence.testPaths).toContain('tests/**');
@@ -91,8 +102,61 @@ describe('automatic repository setup', () => {
     expect(result.repository.checks.map((check) => check.id)).toEqual(
       expect.arrayContaining(['install', 'build', 'lint', 'typecheck', 'unit', 'secrets', 'sast']),
     );
+    expect(result.repository.setup.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'unit', status: 'ready' }),
+        expect.objectContaining({ id: 'integration', status: 'missing' }),
+        expect.objectContaining({ id: 'e2e', status: 'missing' }),
+        expect.objectContaining({ id: 'ci', status: 'missing' }),
+      ]),
+    );
     expect(result.repository.setup.warnings).toEqual(
-      expect.arrayContaining([expect.stringContaining('dependency-audit'), expect.stringContaining('GitHub Actions')]),
+      expect.arrayContaining([expect.stringContaining('GitHub Actions')]),
+    );
+  });
+
+  it('turns confirmed gaps into an executable bootstrap contract without inventing a deployment target', async () => {
+    const root = await repository({
+      'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+      'src/index.js': 'export const ready = true;\n',
+    });
+    const detected = await discoverRepository(await inspectWorkspace(root));
+
+    const configured = configureRepositoryBootstrap(detected.repository, {
+      e2e: 'not_applicable',
+      ci: 'create',
+      deployment: 'disabled',
+    });
+
+    expect(configured.setup.status).toBe('bootstrapping');
+    expect(configured.checks.map((check) => check.id)).toEqual(expect.arrayContaining(['install', 'ci-config']));
+    expect(configured.checks.map((check) => check.id)).not.toContain('e2e');
+    expect(configured.requiredCiChecks).toEqual(['ci']);
+    expect(configured.setup.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'ci-foundation' })]));
+    expect(configured.deployment).toMatchObject({ enabled: false, target: '' });
+    expect(configured.setup.capabilities).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'e2e', status: 'not_applicable' })]),
+    );
+
+    expect(() => configureRepositoryBootstrap(detected.repository, { ci: 'waive', deployment: 'create' })).toThrow(
+      'target platform/environment',
+    );
+    const withDeployment = configureRepositoryBootstrap(detected.repository, {
+      ci: 'waive',
+      deployment: 'create',
+      deploymentTarget: 'AWS ECS staging',
+      healthUrl: 'https://staging.example.com/health',
+    });
+    expect(withDeployment.deployment).toMatchObject({
+      enabled: true,
+      target: 'AWS ECS staging',
+      healthUrl: 'https://staging.example.com/health',
+    });
+    expect(withDeployment.checks.map((check) => check.id)).toEqual(
+      expect.arrayContaining(['deployment-config', 'rollback-config']),
+    );
+    expect(withDeployment.setup.tasks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'deployment-foundation' })]),
     );
   });
 });

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -141,5 +141,31 @@ describe('native workspace evidence', () => {
     });
     expect(JSON.parse(secrets.files['.reports/secrets.json'])[0].RuleID).toBe('aws-access-key');
     expect(JSON.parse(sast.files['.reports/sast.json']).results[0].check_id).toBe('dynamic-eval');
+  });
+
+  it('verifies required bootstrap files without executing them or allowing path escape', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sdlc-bootstrap-check-'));
+    directories.push(root);
+    const command = {
+      id: 'ci-config',
+      label: 'ci config',
+      argv: ['@sdlc/setup', 'github-workflow', '.github/workflows/ci.yml', 'ci', 'pull_request'],
+      required: true,
+      kind: 'acceptance' as const,
+      report: 'exit' as const,
+      reportPath: '',
+      timeoutSeconds: 30,
+    };
+
+    expect((await executeCheck(root, command)).exitCode).toBe(1);
+    await mkdir(join(root, '.github', 'workflows'), { recursive: true });
+    await writeFile(
+      join(root, '.github', 'workflows', 'ci.yml'),
+      'name: CI\non:\n  pull_request:\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo test\n',
+    );
+    expect((await executeCheck(root, command)).exitCode).toBe(0);
+    await expect(executeCheck(root, { ...command, argv: ['@sdlc/setup', 'file', '../outside.yml'] })).rejects.toThrow(
+      'escaped the repository',
+    );
   });
 });

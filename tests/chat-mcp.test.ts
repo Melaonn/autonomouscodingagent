@@ -215,15 +215,77 @@ describe('Codex chat integration', () => {
     const detected = await call(input);
     expect(detected).toMatchObject({ status: 'needs_input', setupRequired: true, repository: 'team/demo' });
     expect(detected.detected).toMatchObject({ stack: 'typescript', confidence: 'high', baseBranch: 'main' });
-    expect(detected.detected.gates.map((check: { id: string }) => check.id)).not.toContain('install');
+    expect(detected.detected.gates.map((check: { id: string }) => check.id)).toEqual(
+      expect.arrayContaining(['install', 'lint', 'unit', 'integration', 'e2e']),
+    );
     expect(detected.detected.warnings).toEqual(expect.arrayContaining([expect.stringContaining('lockfile')]));
+    expect(detected.detected.bootstrapTasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'dependency-lock' }),
+        expect.objectContaining({ id: 'integration-foundation' }),
+        expect.objectContaining({ id: 'e2e-foundation' }),
+      ]),
+    );
     expect(await store.runs()).toHaveLength(0);
     expect((await store.repositories())[0].setup?.status).toBe('needs_confirmation');
 
     const started = await call({ ...input, confirmSetup: true });
-    expect(started).toMatchObject({ status: 'running', phase: 'planning' });
+    expect(started).toMatchObject({ status: 'running', phase: 'planning', bootstrap: { status: 'required' } });
     expect(await store.runs()).toHaveLength(1);
-    expect((await store.repositories())[0].setup?.status).toBe('confirmed');
+    expect((await store.repositories())[0].setup?.status).toBe('bootstrapping');
+    expect((await store.repositories())[0].requiredCiChecks).toEqual(['ci']);
+
+    await writeFile(
+      join(project, 'package.json'),
+      JSON.stringify({
+        name: 'bootstrap-demo',
+        version: '1.0.0',
+        scripts: {
+          build: 'node --check index.js',
+          lint: 'node --check index.js',
+          test: 'node --test',
+          'test:integration': 'node --test',
+          'test:e2e': 'node --test',
+        },
+      }),
+    );
+    await writeFile(
+      join(project, 'package-lock.json'),
+      JSON.stringify({
+        name: 'bootstrap-demo',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        requires: true,
+        packages: { '': { name: 'bootstrap-demo', version: '1.0.0' } },
+      }),
+    );
+    await writeFile(join(project, '.gitignore'), 'node_modules/\n.reports/\n');
+    await mkdir(join(project, '.github', 'workflows'), { recursive: true });
+    await writeFile(
+      join(project, '.github', 'workflows', 'ci.yml'),
+      'name: CI\non:\n  pull_request:\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo test\n',
+    );
+    const verified = await client.callTool({
+      name: 'sdlc_verify',
+      arguments: {
+        runId: started.runId,
+        workspaceRoot: project,
+        checkpoint: {
+          planSummary: 'Create the missing repository SDLC foundations.',
+          planSteps: ['configure deterministic commands', 'add CI'],
+          requirementsSummary: 'The detected SDLC gaps are executable and verified.',
+          acceptanceCriteria: ['Every configured test layer passes.'],
+          designSummary: 'Use package scripts as stable local and CI entry points.',
+          testStrategy: 'Run unit, integration, and E2E commands independently.',
+          risk: { level: 'medium', rationale: 'Adds repository-wide development and CI infrastructure.' },
+        },
+      },
+    });
+    const verifiedData = JSON.parse((verified.content as { type: string; text: string }[])[0].text);
+    expect(verifiedData.verification.failed).toBeUndefined();
+    expect(verifiedData.setup).toBe('ready');
+    expect((await store.repositories())[0].setup?.status).toBe('ready');
+    expect((await store.repositories())[0].setup?.tasks.every((item) => item.status === 'verified')).toBe(true);
   }, 30_000);
 
   it('rejects external hosts and redirects, and does not retry failed mutations', async () => {

@@ -5,6 +5,7 @@ import {
   contractSchema,
   designSchema,
   planSchema,
+  repositorySchema,
   reviewSchema,
   type Artifact,
   type Event,
@@ -13,7 +14,7 @@ import {
   type TaskContract,
 } from '../../../shared/types.js';
 import { executeCheck, inspectWorkspace, type InspectedWorkspace } from './workspace.js';
-import { discoverRepository } from './repository-discovery.js';
+import { configureRepositoryBootstrap, discoverRepository } from './repository-discovery.js';
 
 export interface ChatApi {
   request<T>(path: string, body?: unknown): Promise<T>;
@@ -37,6 +38,15 @@ const nativeReviewSchema = z.object({
   scope: z.enum(['uncommitted', 'base-branch', 'commit', 'custom']).default('uncommitted'),
   summary: reviewSchema.shape.summary,
   findings: reviewSchema.shape.findings,
+});
+const setupDecisionSchema = z.object({
+  e2e: z.enum(['required', 'not_applicable']).default('required'),
+  ci: z.enum(['create', 'preserve', 'waive']).default('create'),
+  requiredCiChecks: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
+  ciWaiver: z.string().trim().max(1_000).default(''),
+  deployment: z.enum(['disabled', 'create', 'preserve']).default('disabled'),
+  deploymentTarget: z.string().trim().max(200).default(''),
+  healthUrl: z.string().trim().max(2_000).default(''),
 });
 
 function nextAction(run: Run) {
@@ -81,9 +91,19 @@ function assertRepository(workspace: InspectedWorkspace, run: Run | Repository) 
 
 function assertProtectedPaths(workspace: InspectedWorkspace, repository: Repository) {
   const prefixes = repository.protectedPaths.map((prefix) => prefix.replaceAll('\\', '/').replace(/^\.\//, ''));
+  const bootstrapFiles = new Set(
+    repository.setup?.status === 'bootstrapping'
+      ? repository.setup.tasks
+          .flatMap((task) => task.files)
+          .map((path) => path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, ''))
+      : [],
+  );
   const changed = workspace.changedPaths.find((path) => {
     const normalized = path.replaceAll('\\', '/').replace(/^\.\//, '');
-    return prefixes.some((prefix) => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+    const protectedPath = prefixes.some(
+      (prefix) => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix),
+    );
+    return protectedPath && !bootstrapFiles.has(normalized);
   });
   if (changed) throw new Error(`Protected policy path is modified: ${changed}`);
 }
@@ -139,10 +159,10 @@ function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, pol
 
 export function createChatServer(api: ChatApi) {
   const server = new McpServer(
-    { name: 'sdlc', version: '0.7.0' },
+    { name: 'sdlc', version: '0.8.0' },
     {
       instructions:
-        'Call sdlc_start before repository inspection in native Plan mode. On first use it may return a detected repository setup that must be explained and confirmed or corrected before calling sdlc_start again with confirmSetup=true. Then inspect once with its bounded company context. After implementation, proceed directly to sdlc_verify with a compact checkpoint: plan summary and steps, requirements summary and acceptance criteria, design and test strategy, and change risk. It records full lifecycle evidence and runs every configured gate. Run focused commands only to debug a concrete problem. Use /review only when policy requires it. Publish only the verified tree. Deployment approval remains in the dashboard.',
+        'Call sdlc_start before repository inspection in native Plan mode. On first use it returns an SDLC capability inventory and questions. Explain the gaps and ask only those questions. Call it again with confirmSetup=true and setupDecision; include every returned bootstrap task in the native plan, then create the missing infrastructure in the same checkout after plan acceptance. Verification will reject placeholder or missing gates. After implementation, call sdlc_verify with a compact lifecycle checkpoint. Use /review only when policy requires it. Publish only the verified tree. Deployment approval remains in the dashboard.',
     },
   );
   const result = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
@@ -160,16 +180,16 @@ export function createChatServer(api: ChatApi) {
   server.registerTool(
     'sdlc_start',
     {
-      description:
-        'Start or resume one governed run in the current checkout during native Plan mode. Unknown repositories are safely auto-detected and returned for one-time confirmation before a run starts.',
+      description: 'Start or resume; first use inventories SDLC gaps.',
       inputSchema: {
         workspaceRoot: z.string().min(1),
         prompt: z.string().min(10).max(100_000),
         confirmSetup: z.boolean().default(false),
+        setupDecision: setupDecisionSchema.optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ workspaceRoot, prompt, confirmSetup }) =>
+    ({ workspaceRoot, prompt, confirmSetup, setupDecision }) =>
       protect(async () => {
         const workspace = await inspectWorkspace(workspaceRoot);
         const repositories = await api.request<Repository[]>('/api/repositories');
@@ -200,6 +220,13 @@ export function createChatServer(api: ChatApi) {
               deployment: repository.deployment,
               evidence: repository.setup.evidence,
               warnings: repository.setup.warnings,
+              capabilities: repository.setup.capabilities,
+              bootstrapTasks: repository.setup.tasks.map(({ id, title, reason, checkIds }) => ({
+                id,
+                title,
+                reason,
+                checkIds,
+              })),
             },
             questions: questions.length
               ? questions
@@ -208,20 +235,36 @@ export function createChatServer(api: ChatApi) {
                   'Should the saved remote-CI waiver remain, or should required GitHub check names be configured?',
                   'Should delivery stop after pull-request CI, or should deployment be configured in the dashboard?',
                 ],
-            next: 'Ask the developer to confirm or correct the detected setup. They can review every field on the Repositories page. After confirmation, call sdlc_start again with confirmSetup=true.',
+            next: 'Explain the detected capabilities and gaps, ask the listed questions, then call sdlc_start again with confirmSetup=true and setupDecision. Do not edit the checkout before the native plan is accepted.',
           };
-        if (repository.setup?.status === 'needs_confirmation') {
-          if (!repository.checks.some((check) => ['unit', 'integration', 'e2e'].includes(check.kind)))
+        if (repository.setup && ['needs_confirmation', 'reviewed'].includes(repository.setup.status)) {
+          if (repository.setup.status === 'needs_confirmation' && !confirmSetup)
+            throw new Error('Confirm the detected setup before starting the run');
+          if (
+            repository.stack === 'custom' &&
+            !repository.checks.some((check) => ['unit', 'integration', 'e2e'].includes(check.kind))
+          )
             throw new Error(
-              'Automatic setup could not identify a test command. Review the auto-filled repository in the dashboard, add a unit, integration, or E2E gate, and save it before continuing.',
+              'The custom stack needs at least one executable unit, integration, or E2E command. Add it in the auto-filled dashboard policy, then continue.',
             );
+          const reviewedDecision =
+            repository.setup.status === 'reviewed' && !setupDecision
+              ? {
+                  ci: repository.requiredCiChecks.length
+                    ? ('preserve' as const)
+                    : repository.ciWaiver && !repository.ciWaiver.startsWith('Automatic setup')
+                      ? ('waive' as const)
+                      : ('create' as const),
+                  requiredCiChecks: repository.requiredCiChecks,
+                  ciWaiver: repository.ciWaiver,
+                  deployment: repository.deployment.enabled ? ('preserve' as const) : ('disabled' as const),
+                  deploymentTarget: repository.deployment.target,
+                  healthUrl: repository.deployment.healthUrl,
+                }
+              : setupDecision;
+          const configured = configureRepositoryBootstrap(repositorySchema.parse(repository), reviewedDecision);
           repository = await api.request<Repository>('/api/repositories', {
-            ...repository,
-            setup: {
-              ...repository.setup,
-              status: 'confirmed',
-              confirmedAt: new Date().toISOString(),
-            },
+            ...configured,
           });
         }
         if (repository.standards.length > 8_000)
@@ -253,6 +296,16 @@ export function createChatServer(api: ChatApi) {
               : [],
           },
           context: created.run.context,
+          bootstrap:
+            created.run.policy.setup?.status === 'bootstrapping'
+              ? {
+                  status: 'required',
+                  instruction:
+                    'Include these tasks in the native plan and implement them before feature verification. Preserve ready capabilities and use repository-appropriate maintained tools.',
+                  capabilities: created.run.policy.setup.capabilities,
+                  tasks: created.run.policy.setup.tasks,
+                }
+              : { status: 'ready', tasks: [] },
         };
       }),
   );
@@ -260,8 +313,7 @@ export function createChatServer(api: ChatApi) {
   server.registerTool(
     'sdlc_verify',
     {
-      description:
-        'Record a compact accepted lifecycle checkpoint on the first call and run all configured gates. Omit the checkpoint on repairs. Returns only failures or a compact pass summary.',
+      description: 'Record the accepted checkpoint and run configured gates.',
       inputSchema: {
         ...runInput,
         workspaceRoot: z.string().min(1),
@@ -343,8 +395,24 @@ export function createChatServer(api: ChatApi) {
         const failed = run.gates
           .filter((gate) => gate.required && gate.status !== 'pass')
           .map(({ id, status, findings }) => ({ id, status, findings }));
+        let setupStatus = run.policy.setup?.status;
+        if (!failed.length && run.policy.setup?.status === 'bootstrapping') {
+          const completed = await api.request<Repository>('/api/repositories', {
+            ...run.policy,
+            setup: {
+              ...run.policy.setup,
+              status: 'ready',
+              capabilities: run.policy.setup.capabilities.map((item) =>
+                ['missing', 'partial'].includes(item.status) ? { ...item, status: 'ready' as const } : item,
+              ),
+              tasks: run.policy.setup.tasks.map((item) => ({ ...item, status: 'verified' as const })),
+            },
+          });
+          setupStatus = completed.setup?.status;
+        }
         return {
           ...summary(run),
+          setup: setupStatus,
           verification: failed.length
             ? { failed, passed: run.gates.filter((gate) => gate.status === 'pass').length }
             : {
@@ -359,8 +427,7 @@ export function createChatServer(api: ChatApi) {
   server.registerTool(
     'sdlc_review',
     {
-      description:
-        'Record exact findings from required native /review. Test-backed acceptance evidence is derived from verified gates.',
+      description: 'Record required native review findings.',
       inputSchema: { ...runInput, review: nativeReviewSchema },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -401,8 +468,7 @@ export function createChatServer(api: ChatApi) {
   server.registerTool(
     'sdlc_publish',
     {
-      description:
-        'Publish after committing and pushing the exact verified tree on a codex/ branch. The server creates or updates the PR and follows required CI.',
+      description: 'Publish the verified branch and follow PR checks.',
       inputSchema: { ...runInput, workspaceRoot: z.string().min(1) },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -427,7 +493,7 @@ export function createChatServer(api: ChatApi) {
   server.registerTool(
     'sdlc_status',
     {
-      description: 'Read a compact run status only for recovery or an explicit status request.',
+      description: 'Read run status for recovery.',
       inputSchema: {
         ...runInput,
         waitSeconds: z.number().int().min(0).max(20).default(0),

@@ -52,6 +52,7 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
       protectedPaths: [],
       deployment: {
         enabled: false,
+        target: '',
         environment: 'staging',
         workflow: 'deploy.yml',
         rollbackWorkflow: 'rollback.yml',
@@ -284,9 +285,37 @@ test('auto-detected repository setup is clearly presented for confirmation', asy
           confirmedAt: null,
           evidence: ['Remote: e2e-team/detected-service', 'Python environment: uv'],
           warnings: ['Required GitHub check names must be confirmed.'],
+          capabilities: [
+            {
+              id: 'unit',
+              label: 'Unit tests',
+              status: 'ready',
+              required: true,
+              evidence: ['tests/unit/'],
+            },
+            {
+              id: 'e2e',
+              label: 'End-to-end tests',
+              status: 'missing',
+              required: true,
+              evidence: ['Missing tests/e2e/'],
+            },
+          ],
+          tasks: [
+            {
+              id: 'e2e-foundation',
+              title: 'Create the end-to-end test foundation',
+              reason: 'No E2E suite was found.',
+              instructions: ['Exercise the public application boundary.'],
+              files: ['tests/e2e/'],
+              checkIds: ['e2e'],
+              status: 'pending',
+            },
+          ],
         },
         deployment: {
           enabled: false,
+          target: '',
           environment: 'staging',
           workflow: 'deploy.yml',
           rollbackWorkflow: 'rollback.yml',
@@ -305,8 +334,11 @@ test('auto-detected repository setup is clearly presented for confirmation', asy
   await expect(page.getByRole('heading', { name: 'Review detected project setup' })).toBeVisible();
   await expect(page.getByText('Codex filled this from the local checkout')).toBeVisible();
   await expect(page.getByText(/Python environment: uv/)).toBeVisible();
+  await expect(page.getByText('Detected SDLC capabilities')).toBeVisible();
+  await page.getByText('1 bootstrap tasks proposed').click();
+  await expect(page.getByText('Create the end-to-end test foundation')).toBeVisible();
   await expect(page.getByLabel('GitHub repository')).toHaveValue('e2e-team/detected-service');
-  await page.getByRole('button', { name: 'Save and confirm setup' }).click();
+  await page.getByRole('button', { name: 'Save reviewed setup' }).click();
   await expect(page.getByRole('heading', { name: 'Review detected project setup' })).not.toBeVisible();
   await expect(page.getByText('review setup', { exact: true })).not.toBeVisible();
   const confirmedSetup = await page.evaluate(async () => {
@@ -318,8 +350,8 @@ test('auto-detected repository setup is clearly presented for confirmation', asy
   });
   expect(confirmedSetup).toMatchObject({
     source: 'detected',
-    status: 'confirmed',
+    status: 'reviewed',
     evidence: expect.arrayContaining(['Python environment: uv']),
-    confirmedAt: expect.any(String),
+    confirmedAt: null,
   });
 });

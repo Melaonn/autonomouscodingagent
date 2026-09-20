@@ -49,11 +49,41 @@ export type CheckCommand = z.infer<typeof commandSchema>;
 
 export const deploymentSchema = z.object({
   enabled: z.boolean().default(false),
+  target: z.string().max(200).default(''),
   environment: z.string().default('staging'),
   workflow: z.string().default('deploy.yml'),
   rollbackWorkflow: z.string().default('rollback.yml'),
   healthUrl: z.string().default(''),
   monitorIntervalSeconds: z.number().int().min(60).default(300),
+});
+
+export const setupCapabilitySchema = z.object({
+  id: z.enum([
+    'dependencies',
+    'build',
+    'lint',
+    'typecheck',
+    'unit',
+    'integration',
+    'e2e',
+    'security',
+    'ci',
+    'deployment',
+  ]),
+  label: z.string().min(1).max(120),
+  status: z.enum(['ready', 'partial', 'missing', 'needs_input', 'not_applicable']),
+  required: z.boolean().default(true),
+  evidence: z.array(z.string().min(1).max(500)).max(20).default([]),
+});
+
+export const setupTaskSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_-]*$/),
+  title: z.string().min(1).max(200),
+  reason: z.string().min(1).max(500),
+  instructions: z.array(z.string().min(1).max(500)).min(1).max(12),
+  files: z.array(z.string().min(1).max(300)).max(30).default([]),
+  checkIds: z.array(z.string().min(1).max(100)).max(20).default([]),
+  status: z.enum(['pending', 'verified']).default('pending'),
 });
 
 export const reviewPolicySchema = z
@@ -112,12 +142,14 @@ export const testEvidencePolicySchema = z
 export const repositorySetupSchema = z
   .object({
     source: z.enum(['manual', 'detected']).default('manual'),
-    status: z.enum(['needs_confirmation', 'confirmed']).default('confirmed'),
+    status: z.enum(['needs_confirmation', 'reviewed', 'bootstrapping', 'ready', 'confirmed']).default('confirmed'),
     confidence: z.enum(['high', 'medium', 'low']).default('high'),
     detectedAt: z.string().datetime().nullable().default(null),
     confirmedAt: z.string().datetime().nullable().default(null),
     evidence: z.array(z.string().min(1).max(500)).max(50).default([]),
     warnings: z.array(z.string().min(1).max(500)).max(50).default([]),
+    capabilities: z.array(setupCapabilitySchema).max(20).default([]),
+    tasks: z.array(setupTaskSchema).max(30).default([]),
   })
   .default({
     source: 'manual',
@@ -127,6 +159,8 @@ export const repositorySetupSchema = z
     confirmedAt: null,
     evidence: [],
     warnings: [],
+    capabilities: [],
+    tasks: [],
   });
 
 export const repositorySchema = z
@@ -146,6 +180,7 @@ export const repositorySchema = z
     testEvidence: testEvidencePolicySchema,
     deployment: deploymentSchema.default({
       enabled: false,
+      target: '',
       environment: 'staging',
       workflow: 'deploy.yml',
       rollbackWorkflow: 'rollback.yml',
