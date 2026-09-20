@@ -136,7 +136,6 @@ describe('Codex chat integration', () => {
             id: 'AC-1',
             description: 'Configured verification passes',
             evidence: 'test',
-            checkIds: ['unit'],
             category: 'functional',
           },
         ],
@@ -165,6 +164,7 @@ describe('Codex chat integration', () => {
     expect(verified.data.status).toBe('needs_review');
     expect(verified.data.step).toBe('native-review');
     expect(verified.data.verification.passed).toContain('unit');
+    expect((await store.getRun(runId))?.contract?.criteria[0].checkIds).toEqual(['unit']);
     expect(progress).toEqual(expect.arrayContaining(['Starting unit', expect.stringContaining('unit passed')]));
     expect((await call('sdlc_start', { ...input, prompt: 'Start while native review is pending' })).error).toBe(true);
     const blockedByNativeReview = await call('sdlc_review', {
@@ -222,10 +222,14 @@ describe('Codex chat integration', () => {
           { headers: { 'set-cookie': 'sdlc_session=test; HttpOnly; Path=/' } },
         ),
       )
-      .mockResolvedValueOnce(Response.json({ error: 'private internal secret' }, { status: 500 }));
+      .mockResolvedValueOnce(Response.json({ error: 'private internal secret' }, { status: 500 }))
+      .mockResolvedValueOnce(Response.json({ error: 'Specification checkpoint is out of order' }, { status: 409 }));
     const api = new ChatClient('http://127.0.0.1:4310');
     await expect(api.request('/api/runs', {})).rejects.toThrow('Harness request failed (500)');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(api.request('/api/runs', {})).rejects.toThrow(
+      'Harness request failed (409): Specification checkpoint is out of order',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     for (const [, init] of fetchMock.mock.calls) expect(init?.redirect).toBe('error');
   });
 });

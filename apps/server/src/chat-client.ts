@@ -65,9 +65,16 @@ export class ChatClient {
         this.cookie = '';
         this.csrf = '';
       }
+      let detail = '';
+      if (response.status >= 400 && response.status < 500) {
+        const payload = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined;
+        if (typeof payload?.error === 'string') detail = payload.error.slice(0, 2_000);
+      }
       // Never retry mutations automatically: a timed-out start may already exist.
       throw new Error(
-        `Harness request failed (${response.status}). Inspect sdlc_status when a run ID is available, or use the dashboard for details.`,
+        detail
+          ? `Harness request failed (${response.status}): ${detail}`
+          : `Harness request failed (${response.status}). Inspect sdlc_status when a run ID is available, or use the dashboard for details.`,
       );
     }
     return (path.endsWith('/report') ? response.text() : response.json()) as Promise<T>;

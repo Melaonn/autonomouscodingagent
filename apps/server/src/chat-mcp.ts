@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   changeRiskSchema,
   contractSchema,
+  criterionSchema,
   designSchema,
   planSchema,
   reviewSchema,
@@ -11,6 +12,7 @@ import {
   type Event,
   type Repository,
   type Run,
+  type TaskContract,
 } from '../../../shared/types.js';
 import { executeCheck, inspectWorkspace, type InspectedWorkspace } from './workspace.js';
 
@@ -22,9 +24,19 @@ type Detail = { run: Run; events: Event[]; artifacts: Artifact[] };
 const runInput = { runId: z.string().uuid() };
 const active = new Set(['running', 'repairing']);
 const approvedPlanSchema = planSchema.omit({ source: true });
+const acceptanceCriterionInputSchema = criterionSchema.omit({ checkIds: true }).extend({
+  evidence: z.enum(['test', 'review']),
+});
+const requirementsInputSchema = z.object({
+  summary: contractSchema.shape.summary,
+  criteria: z.array(acceptanceCriterionInputSchema).min(1),
+  nonGoals: contractSchema.shape.nonGoals,
+  assumptions: contractSchema.shape.assumptions,
+  risks: contractSchema.shape.risks,
+});
 const specificationInputSchema = z.object({
   plan: approvedPlanSchema,
-  requirements: contractSchema,
+  requirements: requirementsInputSchema,
   design: designSchema,
   risk: changeRiskSchema,
 });
@@ -81,6 +93,27 @@ function assertProtectedPaths(workspace: InspectedWorkspace, repository: Reposit
     return prefixes.some((prefix) => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
   });
   if (changed) throw new Error(`Protected policy path is modified: ${changed}`);
+}
+
+function bindAcceptanceEvidence(
+  requirements: z.infer<typeof requirementsInputSchema>,
+  policy: Repository,
+): TaskContract {
+  const testGateIds = policy.checks
+    .filter((check) => check.required && ['unit', 'integration', 'e2e'].includes(check.kind))
+    .map((check) => check.id);
+  if (requirements.criteria.some((criterion) => criterion.evidence === 'test') && !testGateIds.length)
+    throw new Error(
+      'Repository policy needs a required unit, integration, or E2E gate for test-backed acceptance criteria',
+    );
+  return contractSchema.parse({
+    ...requirements,
+    clarification: null,
+    criteria: requirements.criteria.map((criterion) => ({
+      ...criterion,
+      checkIds: criterion.evidence === 'test' ? testGateIds : [],
+    })),
+  });
 }
 
 export function createChatServer(api: ChatApi) {
@@ -181,6 +214,7 @@ export function createChatServer(api: ChatApi) {
           await api.request<Run>(`/api/runs/${runId}/specification`, {
             ...specification,
             plan: { source: 'codex-plan-mode', ...specification.plan },
+            requirements: bindAcceptanceEvidence(specification.requirements, detail.run.policy),
           });
           detail = await api.request<Detail>(`/api/runs/${runId}`);
         } else if (specification) {
