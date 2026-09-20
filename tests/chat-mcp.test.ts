@@ -135,7 +135,6 @@ describe('Codex chat integration', () => {
           {
             id: 'AC-1',
             description: 'Configured verification passes',
-            evidence: 'test',
             category: 'functional',
           },
         ],
@@ -165,6 +164,7 @@ describe('Codex chat integration', () => {
     expect(verified.data.step).toBe('native-review');
     expect(verified.data.verification.passed).toContain('unit');
     expect((await store.getRun(runId))?.contract?.criteria[0].checkIds).toEqual(['unit']);
+    expect((await store.getRun(runId))?.contract?.criteria[0].evidence).toBe('test');
     expect(progress).toEqual(expect.arrayContaining(['Starting unit', expect.stringContaining('unit passed')]));
     expect((await call('sdlc_start', { ...input, prompt: 'Start while native review is pending' })).error).toBe(true);
     const blockedByNativeReview = await call('sdlc_review', {

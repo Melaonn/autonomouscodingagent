@@ -24,9 +24,7 @@ type Detail = { run: Run; events: Event[]; artifacts: Artifact[] };
 const runInput = { runId: z.string().uuid() };
 const active = new Set(['running', 'repairing']);
 const approvedPlanSchema = planSchema.omit({ source: true });
-const acceptanceCriterionInputSchema = criterionSchema.omit({ checkIds: true }).extend({
-  evidence: z.enum(['test', 'review']),
-});
+const acceptanceCriterionInputSchema = criterionSchema.omit({ checkIds: true, evidence: true });
 const requirementsInputSchema = z.object({
   summary: contractSchema.shape.summary,
   criteria: z.array(acceptanceCriterionInputSchema).min(1),
@@ -102,7 +100,7 @@ function bindAcceptanceEvidence(
   const testGateIds = policy.checks
     .filter((check) => check.required && ['unit', 'integration', 'e2e'].includes(check.kind))
     .map((check) => check.id);
-  if (requirements.criteria.some((criterion) => criterion.evidence === 'test') && !testGateIds.length)
+  if (!testGateIds.length)
     throw new Error(
       'Repository policy needs a required unit, integration, or E2E gate for test-backed acceptance criteria',
     );
@@ -111,7 +109,8 @@ function bindAcceptanceEvidence(
     clarification: null,
     criteria: requirements.criteria.map((criterion) => ({
       ...criterion,
-      checkIds: criterion.evidence === 'test' ? testGateIds : [],
+      evidence: 'test',
+      checkIds: testGateIds,
     })),
   });
 }
