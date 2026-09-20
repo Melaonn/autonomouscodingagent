@@ -2268,6 +2268,11 @@ textarea::placeholder {
   color: var(--amber);
 }
 
+.stack.custom {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
 .repo-card h2 {
   font-size: 15px;
   font-weight: 650;

@@ -247,6 +247,22 @@ export type InspectedWorkspace = WorkspaceState & {
   changedPaths: string[];
 };
 
+export async function listWorkspaceFiles(root: string) {
+  return (await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']))
+    .split('\0')
+    .filter(Boolean)
+    .map((file) => file.replaceAll('\\', '/'));
+}
+
+export async function inspectDefaultBranch(root: string, fallback: string) {
+  try {
+    const reference = await git(root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    return { branch: reference.replace(/^origin\//, '') || fallback, verified: true };
+  } catch {
+    return { branch: fallback, verified: false };
+  }
+}
+
 export async function inspectWorkspace(path: string): Promise<InspectedWorkspace> {
   const requested = await realpath(path);
   const root = await realpath(await git(requested, ['rev-parse', '--show-toplevel']));

@@ -109,6 +109,26 @@ export const testEvidencePolicySchema = z
     testPaths: ['test/**', 'tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*'],
   });
 
+export const repositorySetupSchema = z
+  .object({
+    source: z.enum(['manual', 'detected']).default('manual'),
+    status: z.enum(['needs_confirmation', 'confirmed']).default('confirmed'),
+    confidence: z.enum(['high', 'medium', 'low']).default('high'),
+    detectedAt: z.string().datetime().nullable().default(null),
+    confirmedAt: z.string().datetime().nullable().default(null),
+    evidence: z.array(z.string().min(1).max(500)).max(50).default([]),
+    warnings: z.array(z.string().min(1).max(500)).max(50).default([]),
+  })
+  .default({
+    source: 'manual',
+    status: 'confirmed',
+    confidence: 'high',
+    detectedAt: null,
+    confirmedAt: null,
+    evidence: [],
+    warnings: [],
+  });
+
 export const repositorySchema = z
   .object({
     name: z.string().min(1).max(120),
@@ -121,6 +141,7 @@ export const repositorySchema = z
     requiredCiChecks: z.array(z.string()).default([]),
     ciWaiver: z.string().default(''),
     protectedPaths: z.array(z.string()).default(['.github/workflows/', '.sdlc/']),
+    setup: repositorySetupSchema,
     review: reviewPolicySchema,
     testEvidence: testEvidencePolicySchema,
     deployment: deploymentSchema.default({
@@ -137,10 +158,11 @@ export const repositorySchema = z
     path: ['checks'],
   });
 export type RepositoryConfig = z.infer<typeof repositorySchema>;
-export interface Repository extends RepositoryConfig {
+export interface Repository extends Omit<RepositoryConfig, 'setup'> {
   id: string;
   version: number;
   createdAt: string;
+  setup?: RepositoryConfig['setup'];
 }
 
 export const criterionSchema = z.object({

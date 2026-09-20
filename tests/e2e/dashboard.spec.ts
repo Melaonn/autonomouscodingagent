@@ -246,3 +246,80 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
   );
   expect(runId).toMatch(/^[0-9a-f-]{36}$/);
 });
+
+test('auto-detected repository setup is clearly presented for confirmation', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(async () => {
+    const me = (await (await fetch('/api/me')).json()) as { csrf: string };
+    const response = await fetch('/api/repositories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': me.csrf },
+      body: JSON.stringify({
+        name: 'Detected service',
+        owner: 'e2e-team',
+        repo: 'detected-service',
+        branch: 'main',
+        stack: 'python',
+        standards: '',
+        checks: [
+          {
+            id: 'unit',
+            label: 'unit',
+            argv: ['python', '-m', 'pytest'],
+            required: true,
+            kind: 'unit',
+            report: 'exit',
+            reportPath: '',
+            timeoutSeconds: 30,
+          },
+        ],
+        requiredCiChecks: [],
+        ciWaiver: 'Awaiting confirmation',
+        protectedPaths: ['.github/workflows/', '.sdlc/'],
+        setup: {
+          source: 'detected',
+          status: 'needs_confirmation',
+          confidence: 'high',
+          detectedAt: new Date().toISOString(),
+          confirmedAt: null,
+          evidence: ['Remote: e2e-team/detected-service', 'Python environment: uv'],
+          warnings: ['Required GitHub check names must be confirmed.'],
+        },
+        deployment: {
+          enabled: false,
+          environment: 'staging',
+          workflow: 'deploy.yml',
+          rollbackWorkflow: 'rollback.yml',
+          healthUrl: '',
+          monitorIntervalSeconds: 300,
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+  });
+
+  await page.getByRole('button', { name: 'Repositories' }).click();
+  await expect(page.getByRole('heading', { name: 'Detected service' })).toBeVisible();
+  await expect(page.getByText('review setup', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Review detected setup' }).click();
+  await expect(page.getByRole('heading', { name: 'Review detected project setup' })).toBeVisible();
+  await expect(page.getByText('Codex filled this from the local checkout')).toBeVisible();
+  await expect(page.getByText(/Python environment: uv/)).toBeVisible();
+  await expect(page.getByLabel('GitHub repository')).toHaveValue('e2e-team/detected-service');
+  await page.getByRole('button', { name: 'Save and confirm setup' }).click();
+  await expect(page.getByRole('heading', { name: 'Review detected project setup' })).not.toBeVisible();
+  await expect(page.getByText('review setup', { exact: true })).not.toBeVisible();
+  const confirmedSetup = await page.evaluate(async () => {
+    const repositories = (await (await fetch('/api/repositories')).json()) as {
+      repo: string;
+      setup?: { source: string; status: string; evidence: string[]; confirmedAt: string | null };
+    }[];
+    return repositories.find((repository) => repository.repo === 'detected-service')?.setup;
+  });
+  expect(confirmedSetup).toMatchObject({
+    source: 'detected',
+    status: 'confirmed',
+    evidence: expect.arrayContaining(['Python environment: uv']),
+    confirmedAt: expect.any(String),
+  });
+});

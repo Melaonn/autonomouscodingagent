@@ -16,7 +16,7 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
 
    The first run creates `.env`, installs dependencies, builds the app, and opens `http://localhost:4310`. Local access signs in automatically because the server listens only on your computer. Keep this terminal open.
 
-2. In the dashboard, connect the GitHub token and add the repository. Review its commands, company standards, required GitHub checks, and optional deployment workflow.
+2. In the dashboard, connect the GitHub token. You do not need to create repository policy by hand.
 
 3. Connect the harness to your existing Codex app and CLI configuration:
 
@@ -30,7 +30,9 @@ Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub token
 
    > Build an audit history page with filtering and pagination.
 
-Codex uses native Plan mode to inspect the repository and ask its normal clarification questions. Choose to implement when the plan is correct. The same conversation then uses the `sdlc` MCP tools and existing checkout. Open the dashboard to see what is happening, what comes next, quality evidence, failures, PR and CI status, and any action that needs you.
+On the first prompt for a repository, Codex detects the Git remote, base branch, TypeScript or Python stack, package manager, scripts, test layout, GitHub workflows, source/test paths, and deployment clues. It saves an auto-filled repository card and asks you to confirm the uncertain choices. Review or correct the fields in the dashboard, or accept the detected setup in chat. Deployment stays disabled until it is explicitly configured. Later prompts reuse the confirmed versioned policy.
+
+Codex then uses native Plan mode to inspect the repository and ask its normal clarification questions. Choose to implement when the plan is correct. The same conversation uses the `sdlc` MCP tools and existing checkout. Open the dashboard to see what is happening, what comes next, quality evidence, failures, PR and CI status, and any action that needs you.
 
 After local gates pass, the controller applies the repository's explicit review policy. High-risk, broad, or sensitive-path changes ask you to type `/review` and choose **Review uncommitted changes**. Low-risk changes skip that extra model turn when policy permits.
 
@@ -40,7 +42,7 @@ The agent-facing path exposes five tools. A normal low-risk delivery uses three 
 
 ## What happens after the prompt
 
-1. **Planning:** native Codex Plan mode calls `sdlc_start` first, then inspects the checkout once with bounded company context selected from indexed document chunks. Codex asks normal clarification questions and produces the plan.
+1. **Planning:** native Codex Plan mode calls `sdlc_start` first. A new repository is auto-detected and saved for one-time confirmation; a confirmed repository immediately returns its bounded company context. Codex then inspects the checkout once, asks normal clarification questions, and produces the plan.
 2. **Requirements:** Codex creates measurable acceptance criteria and maps testable criteria to configured checks after product questions are resolved in Plan mode.
 3. **Design:** the first `sdlc_verify` call records a compact plan, requirements, design, test-strategy, and change-risk checkpoint, which the controller expands into the lifecycle record.
 4. **Coding:** the same Codex conversation edits the developer's existing checkout, including intentional local work already present.
@@ -82,6 +84,7 @@ npm run check
 The main components are:
 
 - `apps/server/src/chat-mcp.ts`: tools exposed to the current Codex conversation.
+- `apps/server/src/repository-discovery.ts`: safe first-run stack, command, test, CI, and deployment discovery.
 - `apps/server/src/workspace.ts`: safe local Git inspection and configured command execution.
 - `apps/server/src/run-service.ts`: durable lifecycle and delivery state machine.
 - `apps/server/src/gates.ts`: evidence evaluation and completion rules.

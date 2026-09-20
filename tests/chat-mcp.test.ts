@@ -187,6 +187,45 @@ describe('Codex chat integration', () => {
     expect(protectedStart.data.error).toContain('Protected policy path');
   }, 30_000);
 
+  it('auto-fills an unknown repository and waits for one-time confirmation', async () => {
+    const project = await workspace();
+    await writeFile(
+      join(project, 'package.json'),
+      JSON.stringify({ scripts: { build: 'node --check index.js', test: 'node --test' } }),
+    );
+    const store = await Store.open();
+    cleanup.push(() => store.close());
+    const runs = new RunService(store);
+    const app = await buildApi(store, runs);
+    cleanup.push(() => app.close());
+    const url = await app.listen({ host: '127.0.0.1', port: 0 });
+    const server = createChatServer(new ChatClient(url));
+    cleanup.push(() => server.close());
+    const client = new Client({ name: 'test-codex', version: '1' });
+    cleanup.push(() => client.close());
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const call = async (arguments_: Record<string, unknown>) => {
+      const response = await client.callTool({ name: 'sdlc_start', arguments: arguments_ });
+      return JSON.parse((response.content as { type: string; text: string }[])[0].text);
+    };
+    const input = { workspaceRoot: project, prompt: 'Add automatic project onboarding for the local repository' };
+
+    const detected = await call(input);
+    expect(detected).toMatchObject({ status: 'needs_input', setupRequired: true, repository: 'team/demo' });
+    expect(detected.detected).toMatchObject({ stack: 'typescript', confidence: 'high', baseBranch: 'main' });
+    expect(detected.detected.gates.map((check: { id: string }) => check.id)).not.toContain('install');
+    expect(detected.detected.warnings).toEqual(expect.arrayContaining([expect.stringContaining('lockfile')]));
+    expect(await store.runs()).toHaveLength(0);
+    expect((await store.repositories())[0].setup?.status).toBe('needs_confirmation');
+
+    const started = await call({ ...input, confirmSetup: true });
+    expect(started).toMatchObject({ status: 'running', phase: 'planning' });
+    expect(await store.runs()).toHaveLength(1);
+    expect((await store.repositories())[0].setup?.status).toBe('confirmed');
+  }, 30_000);
+
   it('rejects external hosts and redirects, and does not retry failed mutations', async () => {
     expect(() => new ChatClient('https://example.com')).toThrow('loopback');
     expect(() => new ChatClient('http://127.0.0.1:4310/path')).toThrow('loopback');

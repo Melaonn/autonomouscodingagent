@@ -1194,6 +1194,16 @@ function RepositoriesPage() {
     environment: 'staging',
   };
   const [form, setForm] = useState(fresh);
+  const selectedRepository = repos.find(
+    (repository) =>
+      repository.owner.toLowerCase() === form.owner.toLowerCase() &&
+      repository.repo.toLowerCase() === form.repo.toLowerCase(),
+  );
+  const reviewingDetectedSetup = selectedRepository?.setup?.status === 'needs_confirmation';
+  const selectedFullName = form.owner && form.repo ? `${form.owner}/${form.repo}` : '';
+  const selectedIsAvailable = available.some(
+    (repository) => repository.fullName.toLowerCase() === selectedFullName.toLowerCase(),
+  );
   const load = () =>
     Promise.all([
       api<Repository[]>('/api/repositories'),
@@ -1282,6 +1292,13 @@ function RepositoriesPage() {
               .filter(Boolean),
           },
           protectedPaths: ['.github/workflows/', '.sdlc/'],
+          setup: selectedRepository?.setup
+            ? {
+                ...selectedRepository.setup,
+                status: 'confirmed',
+                confirmedAt: selectedRepository.setup.confirmedAt || new Date().toISOString(),
+              }
+            : undefined,
           deployment: {
             enabled: form.deploymentEnabled,
             environment: form.environment,
@@ -1305,7 +1322,7 @@ function RepositoriesPage() {
         <div>
           <p className="eyebrow">POLICY BOUNDARIES</p>
           <h1>Repositories</h1>
-          <p>Choose a connected GitHub project and define its release evidence.</p>
+          <p>Projects opened through Codex appear here with detected commands and policies ready for review.</p>
         </div>
         <button className="button primary" onClick={() => setOpen(true)} disabled={!available.length}>
           <Plus />
@@ -1340,8 +1357,16 @@ function RepositoriesPage() {
         {repos.map((r) => (
           <article className="repo-card" key={r.id}>
             <div>
-              <span className={`stack ${r.stack}`}>{r.stack === 'python' ? 'PY' : 'TS'}</span>
-              <span className="badge monitoring">{r.deployment.enabled ? 'deploy governed' : 'PR only'}</span>
+              <span className={`stack ${r.stack}`}>
+                {r.stack === 'python' ? 'PY' : r.stack === 'typescript' ? 'TS' : 'CUSTOM'}
+              </span>
+              <span className={`badge ${r.setup?.status === 'needs_confirmation' ? 'needs_input' : 'monitoring'}`}>
+                {r.setup?.status === 'needs_confirmation'
+                  ? 'review setup'
+                  : r.deployment.enabled
+                    ? 'deploy governed'
+                    : 'PR only'}
+              </span>
             </div>
             <h2>{r.name}</h2>
             <p>
@@ -1354,7 +1379,7 @@ function RepositoriesPage() {
             </div>
             <button className="button quiet repo-edit" onClick={() => edit(r)}>
               <Wrench />
-              Edit policy
+              {r.setup?.status === 'needs_confirmation' ? 'Review detected setup' : 'Edit policy'}
             </button>
           </article>
         ))}
@@ -1370,13 +1395,33 @@ function RepositoriesPage() {
       {open && (
         <Modal
           title={
-            repos.some((r) => r.owner === form.owner && r.repo === form.repo)
-              ? 'Edit repository policy'
+            selectedRepository
+              ? reviewingDetectedSetup
+                ? 'Review detected project setup'
+                : 'Edit repository policy'
               : 'Add a repository'
           }
           close={() => setOpen(false)}
         >
           <form className="form" onSubmit={save}>
+            {reviewingDetectedSetup && selectedRepository?.setup && (
+              <div className="notice warning">
+                <Bot />
+                <div>
+                  <strong>Codex filled this from the local checkout</strong>
+                  <p>
+                    Confirm the stack, base branch, CI, quality gates, and deployment settings. Saving this form marks
+                    the setup as reviewed.
+                  </p>
+                  {selectedRepository.setup.evidence.length > 0 && (
+                    <p className="fine-print">Detected: {selectedRepository.setup.evidence.join(' · ')}</p>
+                  )}
+                  {selectedRepository.setup.warnings.length > 0 && (
+                    <p className="fine-print">Check: {selectedRepository.setup.warnings.join(' · ')}</p>
+                  )}
+                </div>
+              </div>
+            )}
             <label>
               GitHub repository
               <select
@@ -1385,6 +1430,9 @@ function RepositoriesPage() {
                 onChange={(e) => choose(e.target.value)}
               >
                 <option value="">Choose repository…</option>
+                {selectedFullName && !selectedIsAvailable && (
+                  <option value={selectedFullName}>{selectedFullName} · local checkout</option>
+                )}
                 {available.map((repo) => (
                   <option key={repo.fullName} value={repo.fullName}>
                     {repo.fullName}
@@ -1580,7 +1628,9 @@ function RepositoriesPage() {
               <button type="button" className="button quiet" onClick={() => setOpen(false)}>
                 Cancel
               </button>
-              <button className="button primary">Save repository</button>
+              <button className="button primary">
+                {reviewingDetectedSetup ? 'Save and confirm setup' : 'Save repository'}
+              </button>
             </div>
           </form>
         </Modal>
@@ -1720,7 +1770,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
       setBusy('');
     }
   }
-  const complete = !!state?.github && !!state?.repositories;
+  const complete = !!state?.github;
   return (
     <>
       <header className="page-head">
@@ -1796,22 +1846,18 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
           </div>
           <div>{state?.github && <SetupStatus label="Connected" />}</div>
         </section>
-        <section className={`setup-card ${state?.repositories ? 'complete' : ''}`}>
+        <section className="setup-card complete">
           <div className="setup-number">3</div>
           <div className="setup-copy">
             <span className="eyebrow">REPOSITORY POLICY</span>
-            <h2>Choose a repository</h2>
-            <p>Select the project, its quality gates, staging workflow, and health check.</p>
+            <h2>Open your project in Codex</h2>
+            <p>
+              The first governed prompt detects the repository, stack, commands, tests, CI, and deployment clues. You
+              only confirm or correct the auto-filled policy.
+            </p>
           </div>
           <div>
-            {state?.repositories ? (
-              <SetupStatus label="Configured" />
-            ) : (
-              <button className="button primary" onClick={() => navigate('repositories')}>
-                <GitBranch />
-                Add repository
-              </button>
-            )}
+            <SetupStatus label={state?.repositories ? 'Configured' : 'Automatic on first prompt'} />
           </div>
         </section>
       </div>

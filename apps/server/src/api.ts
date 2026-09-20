@@ -187,7 +187,11 @@ export async function buildApi(store: Store, runs: RunService) {
     }
     if (!input.requiredCiChecks.length && !input.ciWaiver.trim())
       throw error(400, 'Configure required CI checks or a documented CI waiver');
-    const existing = (await store.repositories()).find((r) => r.owner === input.owner && r.repo === input.repo);
+    const existing = (await store.repositories()).find(
+      (repository) =>
+        repository.owner.toLowerCase() === input.owner.toLowerCase() &&
+        repository.repo.toLowerCase() === input.repo.toLowerCase(),
+    );
     const repository = {
       ...input,
       id: existing?.id || randomUUID(),

@@ -13,6 +13,7 @@ import {
   type TaskContract,
 } from '../../../shared/types.js';
 import { executeCheck, inspectWorkspace, type InspectedWorkspace } from './workspace.js';
+import { discoverRepository } from './repository-discovery.js';
 
 export interface ChatApi {
   request<T>(path: string, body?: unknown): Promise<T>;
@@ -138,10 +139,10 @@ function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, pol
 
 export function createChatServer(api: ChatApi) {
   const server = new McpServer(
-    { name: 'sdlc', version: '0.6.0' },
+    { name: 'sdlc', version: '0.7.0' },
     {
       instructions:
-        'Call sdlc_start before repository inspection in native Plan mode, then inspect once with its bounded company context. After implementation, proceed directly to sdlc_verify with a compact checkpoint: plan summary and steps, requirements summary and acceptance criteria, design and test strategy, and change risk. It records full lifecycle evidence and runs every configured gate. Run focused commands only to debug a concrete problem. Use /review only when policy requires it. Publish only the verified tree. Deployment approval remains in the dashboard.',
+        'Call sdlc_start before repository inspection in native Plan mode. On first use it may return a detected repository setup that must be explained and confirmed or corrected before calling sdlc_start again with confirmSetup=true. Then inspect once with its bounded company context. After implementation, proceed directly to sdlc_verify with a compact checkpoint: plan summary and steps, requirements summary and acceptance criteria, design and test strategy, and change risk. It records full lifecycle evidence and runs every configured gate. Run focused commands only to debug a concrete problem. Use /review only when policy requires it. Publish only the verified tree. Deployment approval remains in the dashboard.',
     },
   );
   const result = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] });
@@ -160,26 +161,69 @@ export function createChatServer(api: ChatApi) {
     'sdlc_start',
     {
       description:
-        'Start or resume one governed run in the current checkout during native Plan mode. Returns bounded company context and implementation rules.',
+        'Start or resume one governed run in the current checkout during native Plan mode. Unknown repositories are safely auto-detected and returned for one-time confirmation before a run starts.',
       inputSchema: {
         workspaceRoot: z.string().min(1),
         prompt: z.string().min(10).max(100_000),
+        confirmSetup: z.boolean().default(false),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ workspaceRoot, prompt }) =>
+    ({ workspaceRoot, prompt, confirmSetup }) =>
       protect(async () => {
         const workspace = await inspectWorkspace(workspaceRoot);
         const repositories = await api.request<Repository[]>('/api/repositories');
-        const repository = repositories.find(
+        let repository = repositories.find(
           (candidate) =>
             candidate.owner.toLowerCase() === workspace.owner.toLowerCase() &&
             candidate.repo.toLowerCase() === workspace.repo.toLowerCase(),
         );
-        if (!repository)
-          throw new Error(
-            `Repository ${workspace.owner}/${workspace.repo} is not configured. Add it in the dashboard first.`,
-          );
+        let questions: string[] = [];
+        if (!repository) {
+          const discovery = await discoverRepository(workspace);
+          repository = await api.request<Repository>('/api/repositories', discovery.repository);
+          questions = discovery.questions;
+        }
+        if (repository.setup?.status === 'needs_confirmation' && !confirmSetup)
+          return {
+            status: 'needs_input',
+            phase: 'planning',
+            setupRequired: true,
+            repository: `${repository.owner}/${repository.repo}`,
+            detected: {
+              stack: repository.stack,
+              confidence: repository.setup.confidence,
+              baseBranch: repository.branch,
+              gates: repository.checks.map(({ id, label, kind, argv }) => ({ id, label, kind, argv })),
+              requiredCiChecks: repository.requiredCiChecks,
+              ciWaiver: repository.ciWaiver,
+              deployment: repository.deployment,
+              evidence: repository.setup.evidence,
+              warnings: repository.setup.warnings,
+            },
+            questions: questions.length
+              ? questions
+              : [
+                  `Is the detected ${repository.stack} stack and gate list correct?`,
+                  'Should the saved remote-CI waiver remain, or should required GitHub check names be configured?',
+                  'Should delivery stop after pull-request CI, or should deployment be configured in the dashboard?',
+                ],
+            next: 'Ask the developer to confirm or correct the detected setup. They can review every field on the Repositories page. After confirmation, call sdlc_start again with confirmSetup=true.',
+          };
+        if (repository.setup?.status === 'needs_confirmation') {
+          if (!repository.checks.some((check) => ['unit', 'integration', 'e2e'].includes(check.kind)))
+            throw new Error(
+              'Automatic setup could not identify a test command. Review the auto-filled repository in the dashboard, add a unit, integration, or E2E gate, and save it before continuing.',
+            );
+          repository = await api.request<Repository>('/api/repositories', {
+            ...repository,
+            setup: {
+              ...repository.setup,
+              status: 'confirmed',
+              confirmedAt: new Date().toISOString(),
+            },
+          });
+        }
         if (repository.standards.length > 8_000)
           throw new Error('Repository standards exceed 8,000 characters; move scoped guidance into Company Knowledge');
         assertProtectedPaths(workspace, repository);
