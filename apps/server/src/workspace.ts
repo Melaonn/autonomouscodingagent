@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,33 @@ import spawn from 'cross-spawn';
 import type { CheckCommand, JobResult, WorkspaceState } from '../../../shared/types.js';
 
 const outputLimit = 256_000;
+const sourceExtensions = new Set([
+  '.c',
+  '.cjs',
+  '.cpp',
+  '.cs',
+  '.go',
+  '.h',
+  '.html',
+  '.java',
+  '.js',
+  '.json',
+  '.jsx',
+  '.mjs',
+  '.php',
+  '.ps1',
+  '.py',
+  '.rb',
+  '.rs',
+  '.sh',
+  '.sql',
+  '.toml',
+  '.ts',
+  '.tsx',
+  '.vue',
+  '.yaml',
+  '.yml',
+]);
 
 type ProcessResult = Omit<JobResult, 'files'>;
 
@@ -66,6 +93,104 @@ async function git(root: string, args: string[], environment: NodeJS.ProcessEnv 
   const result = await execute('git', args, root, 60, environment);
   if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `git ${args[0]} failed`);
   return result.stdout.trim();
+}
+
+async function dependencyFingerprint(root: string) {
+  const hash = createHash('sha256');
+  let foundLock = false;
+  for (const name of ['package.json', 'package-lock.json', 'npm-shrinkwrap.json']) {
+    const content = await readFile(resolve(root, name)).catch(() => undefined);
+    if (!content) continue;
+    if (name !== 'package.json') foundLock = true;
+    hash.update(name).update(content);
+  }
+  if (!foundLock) return undefined;
+  hash.update(process.version).update(process.platform).update(process.arch);
+  return hash.digest('hex');
+}
+
+async function npmInstallCache(root: string) {
+  const fingerprint = await dependencyFingerprint(root);
+  if (!fingerprint) return undefined;
+  const marker = resolve(root, 'node_modules', '.sdlc-install-fingerprint');
+  return { fingerprint, marker };
+}
+
+async function candidateSources(root: string) {
+  const files = (await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']))
+    .split('\0')
+    .filter(Boolean)
+    .filter((file) => sourceExtensions.has(file.slice(file.lastIndexOf('.')).toLowerCase()));
+  const sources: { file: string; text: string }[] = [];
+  for (const file of files) {
+    const content = await readFile(resolve(root, file)).catch(() => undefined);
+    if (!content || content.length > 2_000_000 || content.includes(0)) continue;
+    sources.push({ file: file.replaceAll('\\', '/'), text: content.toString('utf8') });
+  }
+  return sources;
+}
+
+async function builtinSecurityCheck(root: string, scanner: string, reportPath: string): Promise<JobResult> {
+  const started = Date.now();
+  const sources = await candidateSources(root);
+  if (scanner === 'secrets') {
+    const rules = [
+      { id: 'private-key', pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g },
+      { id: 'github-token', pattern: /(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})/g },
+      { id: 'aws-access-key', pattern: /(?:AKIA|ASIA)[A-Z0-9]{16}/g },
+      { id: 'stripe-live-key', pattern: /sk_live_[A-Za-z0-9]{20,}/g },
+      { id: 'slack-token', pattern: /xox[baprs]-[A-Za-z0-9-]{20,}/g },
+    ];
+    const findings = sources.flatMap(({ file, text }) =>
+      rules.flatMap((rule) =>
+        [...text.matchAll(rule.pattern)].map((match) => ({
+          RuleID: rule.id,
+          File: file,
+          StartLine: text.slice(0, match.index).split(/\r?\n/).length,
+        })),
+      ),
+    );
+    return {
+      exitCode: findings.length ? 1 : 0,
+      stdout: findings.length ? `Found ${findings.length} potential secret(s)` : 'No high-confidence secrets found',
+      stderr: '',
+      durationMs: Date.now() - started,
+      files: { [reportPath]: JSON.stringify(findings) },
+    };
+  }
+  if (scanner === 'sast') {
+    const rules = [
+      { id: 'dynamic-eval', pattern: /\beval\s*\(/g },
+      { id: 'dynamic-function', pattern: /\bnew\s+Function\s*\(/g },
+      { id: 'shell-execution', pattern: /\bshell\s*:\s*true\b/g },
+      { id: 'disabled-tls-verification', pattern: /\brejectUnauthorized\s*:\s*false\b/g },
+      { id: 'disabled-node-tls', pattern: /NODE_TLS_REJECT_UNAUTHORIZED\s*[:=]\s*['"]?0/g },
+    ];
+    const results = sources.flatMap(({ file, text }) =>
+      rules.flatMap((rule) =>
+        [...text.matchAll(rule.pattern)].map((match) => ({
+          check_id: rule.id,
+          path: file,
+          start: { line: text.slice(0, match.index).split(/\r?\n/).length },
+          extra: { severity: 'ERROR', message: `High-risk pattern: ${rule.id}` },
+        })),
+      ),
+    );
+    return {
+      exitCode: results.length ? 1 : 0,
+      stdout: results.length ? `Found ${results.length} high-risk pattern(s)` : 'No high-risk static patterns found',
+      stderr: '',
+      durationMs: Date.now() - started,
+      files: { [reportPath]: JSON.stringify({ results, errors: [] }) },
+    };
+  }
+  return {
+    exitCode: 127,
+    stdout: '',
+    stderr: `Unknown built-in security scanner: ${scanner}`,
+    durationMs: Date.now() - started,
+    files: {},
+  };
 }
 
 function repositoryFromRemote(remote: string) {
@@ -130,6 +255,24 @@ function reportFile(root: string, path: string) {
 }
 
 export async function executeCheck(root: string, command: CheckCommand): Promise<JobResult> {
+  const [executable, ...args] = command.argv;
+  if (executable === '@sdlc/security') return builtinSecurityCheck(root, args[0], command.reportPath);
+  const installCache =
+    command.kind === 'setup' && executable === 'npm' && args.length === 1 && args[0] === 'ci'
+      ? await npmInstallCache(root)
+      : undefined;
+  if (installCache) {
+    const stored = await readFile(installCache.marker, 'utf8').catch(() => '');
+    if (stored === installCache.fingerprint)
+      return {
+        exitCode: 0,
+        stdout: 'Reused dependency installation; manifests, runtime, platform, and architecture are unchanged.',
+        stderr: '',
+        durationMs: 0,
+        files: {},
+        cached: true,
+      };
+  }
   let reportPath: string | undefined;
   let previousReport: Buffer | undefined;
   if (command.reportPath) {
@@ -144,8 +287,11 @@ export async function executeCheck(root: string, command: CheckCommand): Promise
     FORCE_COLOR: '0',
     ...(command.report === 'playwright' && reportPath ? { PLAYWRIGHT_JSON_OUTPUT_NAME: reportPath } : {}),
   };
-  const [executable, ...args] = command.argv;
   const result = await execute(executable, args, root, command.timeoutSeconds, environment);
+  if (installCache && result.exitCode === 0) {
+    await mkdir(dirname(installCache.marker), { recursive: true });
+    await writeFile(installCache.marker, installCache.fingerprint, 'utf8');
+  }
   const files: Record<string, string> = {};
   if (command.reportPath) {
     const content = reportPath ? await readFile(reportPath, 'utf8').catch(() => '') : '';

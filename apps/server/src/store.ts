@@ -39,7 +39,7 @@ export class Store {
     );
     await this.db.query(`DROP INDEX IF EXISTS one_active_repository;`);
     await this.db.query(
-      `CREATE UNIQUE INDEX one_active_repository ON runs(repository_id) WHERE status IN ('running','repairing','needs_input','awaiting_approval');`,
+      `CREATE UNIQUE INDEX one_active_repository ON runs(repository_id) WHERE status IN ('running','repairing','needs_input','needs_review','awaiting_approval');`,
     );
     await this.db.query(
       `CREATE TABLE IF NOT EXISTS events (id bigserial PRIMARY KEY, run_id text NOT NULL, data jsonb NOT NULL);`,

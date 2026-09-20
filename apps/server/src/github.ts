@@ -48,13 +48,25 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(`GitHub ${path} failed: ${response.status} ${(await response.text()).slice(0, 500)}`);
   return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
 }
+
+async function graphql<T>(query: string, variables: Record<string, unknown>) {
+  const response = await api<{ data?: T; errors?: { message: string }[] }>('/graphql', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (response.errors?.length)
+    throw new Error(`GitHub GraphQL failed: ${response.errors.map((e) => e.message).join('; ')}`);
+  if (!response.data) throw new Error('GitHub GraphQL returned no data');
+  return response.data;
+}
 export async function createOrUpdatePr(run: Run) {
   const repo = run.policy;
   const head = `${repo.owner}:${run.branch}`;
   const existing = await api<{ number: number; html_url: string }[]>(
     `/repos/${repo.owner}/${repo.repo}/pulls?state=open&head=${encodeURIComponent(head)}`,
   );
-  const body = `Native Codex SDLC run \`${run.id}\`. Planning, requirements, design, configured verification, same-session review, deployment approval, and maintenance evidence are tracked by the control plane.\n\nCandidate: \`${run.candidateSha}\``;
+  const body = `Native Codex SDLC run \`${run.id}\`. Codex Plan mode, requirements, design, configured verification, native /review, deployment approval, and maintenance evidence are tracked by the control plane.\n\nCandidate: \`${run.candidateSha}\``;
   if (existing[0]) {
     await api(`/repos/${repo.owner}/${repo.repo}/pulls/${existing[0].number}`, {
       method: 'PATCH',
@@ -99,7 +111,22 @@ export async function requiredChecks(repo: Repository, sha: string) {
   return { state: failed ? ('failure' as const) : pending ? ('pending' as const) : ('success' as const), details };
 }
 export async function markReady(repo: Repository, number: number) {
-  await api(`/repos/${repo.owner}/${repo.repo}/pulls/${number}/ready_for_review`, { method: 'POST' });
+  const pull = await api<{ node_id: string; draft: boolean }>(`/repos/${repo.owner}/${repo.repo}/pulls/${number}`);
+  if (!pull.draft) return;
+  const data = await graphql<{ markPullRequestReadyForReview: { pullRequest: { isDraft: boolean } } }>(
+    `
+      mutation MarkPullRequestReady($pullRequestId: ID!) {
+        markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
+          pullRequest {
+            isDraft
+          }
+        }
+      }
+    `,
+    { pullRequestId: pull.node_id },
+  );
+  if (data.markPullRequestReadyForReview.pullRequest.isDraft)
+    throw new Error('GitHub left the pull request in draft state');
 }
 export async function dispatch(repo: Repository, workflow: string, ref: string, candidateSha: string, runId: string) {
   await api(`/repos/${repo.owner}/${repo.repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, {

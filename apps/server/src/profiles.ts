@@ -28,6 +28,9 @@ export const profiles: Record<string, CheckCommand[]> = {
       'vitest',
       '.reports/unit.json',
     ),
+    check('e2e', 'e2e', ['npm', 'run', 'test:e2e', '--', '--reporter=json'], 'playwright', '.reports/e2e.json'),
+    check('secrets', 'security', ['@sdlc/security', 'secrets'], 'gitleaks', '.reports/secrets.json'),
+    check('sast', 'security', ['@sdlc/security', 'sast'], 'semgrep', '.reports/sast.json'),
     check('dependencies', 'security', ['npm', 'audit', '--json'], 'npm-audit', '.reports/audit.json'),
   ],
   python: [
@@ -49,6 +52,8 @@ export const profiles: Record<string, CheckCommand[]> = {
       'junit',
       '.reports/integration.xml',
     ),
+    check('secrets', 'security', ['@sdlc/security', 'secrets'], 'gitleaks', '.reports/secrets.json'),
+    check('sast', 'security', ['@sdlc/security', 'sast'], 'semgrep', '.reports/sast.json'),
     check(
       'dependencies',
       'security',

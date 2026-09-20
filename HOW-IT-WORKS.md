@@ -4,7 +4,8 @@
 
 ```mermaid
 flowchart LR
-  User[Developer prompt] --> Codex[Existing Codex app or CLI task]
+  User[Developer prompt] --> Plan[Native Codex Plan mode]
+  Plan --> Codex[Existing Codex app or CLI task]
   Codex --> Workspace[Existing local Git checkout]
   Codex <--> MCP[Local SDLC MCP bridge]
   MCP <--> API[Control plane API]
@@ -16,15 +17,19 @@ flowchart LR
   Dashboard --> Approval[Human deployment approval]
 ```
 
-The current Codex conversation is the only coding agent. It keeps the repository understanding and discussion history already built with the developer. The MCP bridge is a constrained control-plane client: it records structured checkpoints, executes administrator-configured commands, and reports evidence. It cannot write repository policy, change credentials, or approve a deployment.
+The current Codex conversation is the only coding agent. Native Plan mode handles repository discovery and clarification before implementation. Native `/review` later starts Codex's dedicated, read-only reviewer for the selected diff. The MCP bridge records their structured evidence, executes administrator-configured commands, and reports lifecycle state. It cannot switch Codex modes, invoke slash commands, write repository policy, change credentials, or approve a deployment.
 
 ## Lifecycle state machine
 
-The run starts from the current commit and records whether local modifications already exist. Codex submits structured planning, requirements, and design documents in order. Requirements with an unresolved stakeholder decision enter `needs_input`; the answer becomes part of the durable contract.
+The developer starts in native Plan mode, where Codex inspects the repository and asks necessary questions. After the developer accepts the plan and switches to implementation, the run starts from the current commit and records whether local modifications already exist. Codex records the approved plan with `codex-plan-mode` provenance, then submits requirements and design. Requirements with an unresolved stakeholder decision enter `needs_input`; the answer becomes part of the durable contract.
 
-During implementation, progress events make the current activity visible in the dashboard. Verification runs every configured command using argument arrays rather than model-generated shell strings. The controller parses each result according to its declared format, such as Vitest, Playwright, JUnit, npm audit, or pip-audit. It rejects missing commands, empty test runs, malformed reports, failed findings, timeouts, and results tied to an older policy or workspace tree.
+During implementation, progress events make the current activity visible in the dashboard. Verification also emits standard MCP progress notifications so a supporting Codex client can show each gate as it starts and finishes. It runs configured commands using argument arrays rather than model-generated shell strings. Setup can be reused only when dependency manifests, Node runtime, platform, and architecture match the recorded fingerprint. After setup, independent gates run with a concurrency limit of three.
 
-A failed gate changes the run to `repairing`. Codex receives the concrete command output in the same conversation, fixes the checkout, and verifies again. Passing gates lead to a structured self-review against every acceptance criterion. Critical or high findings also return to repair. The verification attempt limit prevents endless loops while preserving all evidence.
+The controller parses each result according to its declared format, such as Vitest, Playwright, JUnit, npm audit, pip-audit, Semgrep, or Gitleaks-compatible evidence. The bundled baseline scanners inspect tracked and new candidate source files for high-confidence credentials and dangerous execution or TLS patterns; repository policy can add stronger company scanners. The controller rejects missing commands, empty test runs, malformed reports, failed findings, timeouts, and results tied to an older policy or workspace tree.
+
+A failed gate changes the run to `repairing`. Codex receives the concrete command output in the same conversation, fixes the checkout, and verifies again. Passing gates enter `needs_review`. The developer types `/review` and selects the uncommitted diff; Codex's dedicated reviewer reports prioritized findings without changing the working tree. The harness records the native source, scope, findings, and evidence for every acceptance criterion. Critical or high findings return to repair. The verification attempt limit prevents endless loops while preserving all evidence.
+
+Runs default to delivery mode. Codex may select validation mode only for an explicitly non-mutating audit, smoke test, or verification request. After passing gates and review, a validation run completes only when its Git tree still matches the starting tree; delivery runs continue to branch, pull request, CI, and deployment handling.
 
 The Git tree digest is computed with a temporary Git index. This includes tracked edits, staged edits, deletions, and untracked files without changing the developer's real index. Committing identical content keeps the same tree digest, so the controller can prove that the pushed commit contains the files that passed local verification.
 
@@ -43,6 +48,6 @@ Only the dashboard exposes approval. An approved run dispatches the configured G
 
 ## What this implementation deliberately does not claim
 
-A same-session review benefits from repository context and lower model usage, but it is not an independent reviewer. Companies that require separation of duties should add a second reviewer or CI-owned review gate as policy. The harness also cannot continue model reasoning after the native Codex task has closed; GitHub CI, deployment, health checks, and dashboard monitoring continue because they do not require a coding model.
+Native `/review` uses a dedicated Codex reviewer, but it is still an AI review in the developer's Codex environment. Companies that require organizational separation of duties should add a required human or CI-owned review gate. The harness cannot turn on Plan mode, enter `/review`, or continue model reasoning after the native Codex task closes. GitHub CI, deployment, health checks, and dashboard monitoring continue because they do not require a coding model.
 
 Reliability ultimately depends on the configured checks. A repository with weak tests still has weak proof. Production adoption therefore requires curated policy profiles, hermetic or reproducible project environments, coverage of high-risk behavior, stable test data, and evaluation against real historical incidents.

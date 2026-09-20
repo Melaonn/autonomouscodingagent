@@ -86,10 +86,16 @@ describe('Codex chat integration', () => {
     );
     expect(names.some((name) => name.includes('approv'))).toBe(false);
 
-    const call = async (name: string, args: Record<string, unknown>) => {
-      const response = await client.callTool({ name, arguments: args });
+    const call = async (name: string, args: Record<string, unknown>, options?: Parameters<Client['callTool']>[2]) => {
+      const response = await client.callTool({ name, arguments: args }, undefined, options);
       const content = response.content as { type: string; text: string }[];
-      return { error: response.isError, data: JSON.parse(content[0].text) };
+      let data;
+      try {
+        data = JSON.parse(content[0].text);
+      } catch {
+        data = { error: content[0].text };
+      }
+      return { error: response.isError, data };
     };
     const input = { workspaceRoot: project, prompt: 'Add task priorities with validation' };
     const first = await call('sdlc_start', input);
@@ -108,6 +114,7 @@ describe('Codex chat integration', () => {
         await call('sdlc_plan', {
           runId,
           plan: {
+            source: 'codex-plan-mode',
             scope: 'Task priorities',
             steps: ['add validation', 'test behavior'],
             dependencies: [],
@@ -150,10 +157,18 @@ describe('Codex chat integration', () => {
         testStrategy: 'Run configured unit gate',
       },
     });
-    const verified = await call('sdlc_verify', { runId, workspaceRoot: project });
-    expect(verified.data.step).toBe('self-review');
+    const progress: string[] = [];
+    const verified = await call(
+      'sdlc_verify',
+      { runId, workspaceRoot: project },
+      { onprogress: (update) => progress.push(update.message || '') },
+    );
+    expect(verified.data.status).toBe('needs_review');
+    expect(verified.data.step).toBe('native-review');
     expect(verified.data.gates[0].status).toBe('pass');
-    const reviewed = await call('sdlc_review', {
+    expect(progress).toEqual(expect.arrayContaining(['Starting unit', expect.stringContaining('unit passed')]));
+    expect((await call('sdlc_start', { ...input, prompt: 'Start while native review is pending' })).error).toBe(true);
+    const reviewWithoutNativeEvidence = await call('sdlc_review', {
       runId,
       review: {
         summary: 'Acceptance evidence is complete',
@@ -161,7 +176,43 @@ describe('Codex chat integration', () => {
         criteria: [{ id: 'AC-1', satisfied: true, evidence: 'unit gate passed' }],
       },
     });
+    expect(reviewWithoutNativeEvidence.error).toBe(true);
+    const blockedByNativeReview = await call('sdlc_review', {
+      runId,
+      review: {
+        source: 'codex-native-review',
+        scope: 'uncommitted',
+        summary: 'Native review found a blocking defect',
+        findings: [
+          {
+            id: 'RV-1',
+            severity: 'high',
+            file: 'index.js',
+            line: 1,
+            description: 'Validation is incomplete',
+            correction: 'Handle the missing case',
+            criterionId: 'AC-1',
+          },
+        ],
+        criteria: [{ id: 'AC-1', satisfied: true, evidence: 'unit gate passed' }],
+      },
+    });
+    expect(blockedByNativeReview.data.status).toBe('repairing');
+    expect(blockedByNativeReview.data.step).toBe('repair');
+    const verifiedAfterRepair = await call('sdlc_verify', { runId, workspaceRoot: project });
+    expect(verifiedAfterRepair.data.status).toBe('needs_review');
+    const reviewed = await call('sdlc_review', {
+      runId,
+      review: {
+        source: 'codex-native-review',
+        scope: 'uncommitted',
+        summary: 'Acceptance evidence is complete',
+        findings: [],
+        criteria: [{ id: 'AC-1', satisfied: true, evidence: 'unit gate passed' }],
+      },
+    });
     expect(reviewed.data.step).toBe('publish');
+    expect((await store.artifacts(runId)).some((artifact) => artifact.name === 'native-review.json')).toBe(true);
     expect((await call('sdlc_cancel', { runId })).data.status).toBe('cancelled');
     expect((await call('sdlc_runs', {})).data[0].id).toBe(runId);
     await expect(api.request(`/api/runs/${runId}/approval`, {})).rejects.toThrow('Unsupported');

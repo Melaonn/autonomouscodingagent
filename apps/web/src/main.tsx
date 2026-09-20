@@ -11,7 +11,6 @@ import {
   CheckCircle2,
   ChevronRight,
   Circle,
-  Clock3,
   Code2,
   Database,
   FileCheck2,
@@ -25,7 +24,6 @@ import {
   Rocket,
   Search,
   ShieldCheck,
-  TerminalSquare,
   UserCheck,
   Wrench,
   X,
@@ -36,7 +34,7 @@ import './styles.css';
 type Me = { user: User | null; csrf: string; githubOAuth: boolean };
 type RunBundle = {
   run: Run;
-  events: { id: number; time: string; kind: string; message: string }[];
+  events: { id: number; time: string; kind: string; message: string; phase: Run['phase'] }[];
   artifacts: { id: string; name: string; hash: string; createdAt: string }[];
 };
 type SetupState = { github: boolean; repositories: number };
@@ -65,6 +63,75 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 const seven = ['planning', 'requirements', 'design', 'coding', 'testing', 'deployment', 'maintenance'];
+function shortRunTitle(run: Run) {
+  const value = (run.contract?.summary || run.prompt).replace(/\s+/g, ' ').trim();
+  return value.length > 96 ? `${value.slice(0, 93).trimEnd()}…` : value;
+}
+function runGuidance(run: Run) {
+  if (run.status === 'needs_input')
+    return {
+      label: 'Your decision is needed',
+      detail: run.question || 'Answer the open product question.',
+      action: true,
+    };
+  if (run.status === 'needs_review')
+    return {
+      label: 'Run Codex native review',
+      detail: 'Type /review in this Codex project and choose Review uncommitted changes.',
+      action: true,
+    };
+  if (run.status === 'awaiting_approval')
+    return {
+      label: 'Review deployment',
+      detail: 'All required evidence passed. Approve or reject the exact release.',
+      action: true,
+    };
+  if (run.status === 'repairing')
+    return {
+      label: 'Codex is repairing a failed check',
+      detail: run.blocker || 'A required gate must be fixed and rerun.',
+      action: false,
+    };
+  if (run.status === 'completed' && run.step === 'validated')
+    return {
+      label: 'Validation completed',
+      detail: 'The existing workspace passed without changes or publication.',
+      action: false,
+    };
+  if (run.status === 'completed' || run.status === 'monitoring')
+    return {
+      label: 'Work completed',
+      detail: 'Required evidence is recorded and the release is under maintenance.',
+      action: false,
+    };
+  if (run.status === 'failed' || run.status === 'blocked')
+    return { label: 'Run needs attention', detail: run.blocker || 'Review the failure before resuming.', action: true };
+  if (run.status === 'cancelled')
+    return { label: 'Run cancelled', detail: 'No further lifecycle actions will run.', action: false };
+  if (run.step === 'publish')
+    return {
+      label: 'Preparing the verified change',
+      detail: 'Codex is creating the feature branch, commit, and pull request.',
+      action: false,
+    };
+  if (run.step === 'ci')
+    return {
+      label: 'GitHub checks are running',
+      detail: 'The verified commit is waiting for every required remote check.',
+      action: false,
+    };
+  const guidance: Record<string, [string, string]> = {
+    planning: ['Codex is planning', 'Inspecting the repository and defining scope, dependencies, effort, and risks.'],
+    requirements: ['Codex is defining acceptance', 'Turning the request into measurable requirements and evidence.'],
+    design: ['Codex is designing the change', 'Recording architecture, compatibility, security, and test strategy.'],
+    coding: ['Codex is working in your checkout', 'Implementing or repairing the change in this same conversation.'],
+    testing: ['Quality gates are running', `Current check: ${run.step.replaceAll('-', ' ')}.`],
+    deployment: ['Preparing delivery', 'Publishing the verified revision and following required GitHub checks.'],
+    maintenance: ['Monitoring the release', 'Following health evidence and preserving rollback information.'],
+  };
+  const [label, detail] = guidance[run.phase];
+  return { label, detail, action: false };
+}
 function Login({ me }: { me: Me }) {
   return (
     <main className="login-shell">
@@ -101,7 +168,7 @@ function Badge({ status }: { status: string }) {
       <CheckCircle2 />
     ) : status === 'failed' || status === 'blocked' || status === 'fail' || status === 'error' ? (
       <XCircle />
-    ) : status === 'awaiting_approval' || status === 'needs_input' ? (
+    ) : status === 'awaiting_approval' || status === 'needs_input' || status === 'needs_review' ? (
       <AlertTriangle />
     ) : (
       <LoaderCircle className="spin" />
@@ -200,38 +267,32 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
   }, []);
-  const active = runs.filter((r) => ['running', 'repairing', 'needs_input', 'awaiting_approval'].includes(r.status));
-  const attention = runs.filter((r) => ['failed', 'blocked', 'cancelled'].includes(r.status));
+  const active = runs.filter((r) =>
+    ['running', 'repairing', 'needs_input', 'needs_review', 'awaiting_approval'].includes(r.status),
+  );
+  const attention = runs.filter((r) => ['failed', 'blocked'].includes(r.status));
+  const decisions = runs.filter((r) => ['needs_input', 'needs_review', 'awaiting_approval'].includes(r.status));
+  const successful = runs.filter((r) => ['completed', 'monitoring'].includes(r.status));
   return (
     <>
       <header className="page-head">
         <div>
           <p className="eyebrow">ENGINEERING OPERATIONS</p>
-          <h1>Development runs</h1>
-          <p>Seven phases, one accountable record.</p>
+          <h1>Work in progress</h1>
+          <p>See what Codex is doing, what passed, and when you need to act.</p>
         </div>
         <span className="badge monitoring">Native Codex connected</span>
       </header>
       <div className="metric-grid">
-        <Metric label="Active runs" value={active.length} detail="Across configured repositories" icon={Activity} />
+        <Metric label="In progress" value={active.length} detail="Codex is working" icon={Activity} />
         <Metric
-          label="Awaiting approval"
-          value={runs.filter((r) => r.status === 'awaiting_approval').length}
-          detail="Deployment decisions"
+          label="Waiting for you"
+          value={decisions.length}
+          detail="Questions, review, or approval"
           icon={UserCheck}
         />
-        <Metric
-          label="Under maintenance"
-          value={runs.filter((r) => r.status === 'monitoring').length}
-          detail="Live release monitors"
-          icon={Wrench}
-        />
-        <Metric
-          label="Needs attention"
-          value={attention.length}
-          detail="Failed, blocked, or cancelled"
-          icon={AlertTriangle}
-        />
+        <Metric label="Successful" value={successful.length} detail="Completed or monitored" icon={CheckCircle2} />
+        <Metric label="Needs attention" value={attention.length} detail="Failed or blocked" icon={AlertTriangle} />
       </div>
       {error && (
         <div className="notice error">
@@ -266,10 +327,11 @@ function RunsPage({ onOpen }: { onOpen: (id: string) => void }) {
                   <Code2 />
                 </div>
                 <div className="run-name">
-                  <strong>{run.contract?.summary || run.prompt}</strong>
+                  <strong>{shortRunTitle(run)}</strong>
                   <span>
-                    {run.policy.owner}/{run.policy.repo} · native Codex session
+                    {run.policy.owner}/{run.policy.repo} · {run.mode === 'validation' ? 'validation' : 'delivery'}
                   </span>
+                  <em>{runGuidance(run).label}</em>
                 </div>
                 <div className="run-phase">
                   <small>PHASE {seven.indexOf(run.phase) + 1}/7</small>
@@ -309,11 +371,74 @@ function Metric({
     </div>
   );
 }
+
+function DetailList({ title, items }: { title: string; items?: string[] }) {
+  if (!items?.length) return null;
+  return (
+    <div className="detail-list">
+      <h4>{title}</h4>
+      <ul>
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function lifecyclePhaseState(run: Run, phase: Run['phase']) {
+  const phaseIndex = seven.indexOf(phase);
+  const currentIndex = seven.indexOf(run.phase);
+  if (phaseIndex < currentIndex) return { className: 'complete', label: 'Complete' };
+  if (phaseIndex > currentIndex) return { className: 'upcoming', label: 'Pending' };
+  if (['completed', 'monitoring'].includes(run.status)) return { className: 'complete', label: 'Complete' };
+  if (['blocked', 'failed', 'cancelled'].includes(run.status))
+    return { className: 'attention', label: 'Needs attention' };
+  return { className: 'current', label: 'Current phase' };
+}
+
+function PhaseSection({
+  number,
+  phase,
+  title,
+  description,
+  icon: Icon,
+  run,
+  children,
+}: {
+  number: number;
+  phase: Run['phase'];
+  title: string;
+  description: string;
+  icon: React.ComponentType<{ size?: number }>;
+  run: Run;
+  children: React.ReactNode;
+}) {
+  const state = lifecyclePhaseState(run, phase);
+  return (
+    <section id={`phase-${phase}`} className={`panel phase-section run-section-anchor ${state.className}`}>
+      <header className="phase-section-head">
+        <span className="phase-number">{number}</span>
+        <div>
+          <p>SDLC PHASE {number} OF 7</p>
+          <h2>{title}</h2>
+          <span>{description}</span>
+        </div>
+        <Icon size={18} />
+        <strong className="phase-state">{state.label}</strong>
+      </header>
+      <div className="phase-section-body">{children}</div>
+    </section>
+  );
+}
+
 function RunDetail({ id, back }: { id: string; back: () => void }) {
   const [bundle, setBundle] = useState<RunBundle | null>(null);
   const [error, setError] = useState('');
   const [answer, setAnswer] = useState('');
   const [approve, setApprove] = useState(false);
+  const [showAllEvents, setShowAllEvents] = useState(false);
+  const [showAllArtifacts, setShowAllArtifacts] = useState(false);
   const load = () =>
     api<RunBundle>(`/api/runs/${id}`)
       .then(setBundle)
@@ -340,6 +465,22 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
       </div>
     );
   const run = bundle.run;
+  const guidance = runGuidance(run);
+  const latestEvent = bundle.events.at(-1);
+  const phaseNumber = seven.indexOf(run.phase) + 1;
+  const events = bundle.events.slice().reverse();
+  const visibleEvents = showAllEvents ? events : events.slice(0, 8);
+  const visibleArtifacts = showAllArtifacts ? bundle.artifacts : bundle.artifacts.slice(0, 8);
+  const codingEvents = events.filter((event) => event.phase === 'coding').slice(0, 4);
+  const gateTotal = run.gates.length || run.policy.checks.length;
+  const gatePassed = run.gates.filter((gate) => ['pass', 'waived'].includes(gate.status)).length;
+  const gateFailed = run.gates.filter((gate) => ['fail', 'error'].includes(gate.status)).length;
+  const gatePending = Math.max(0, gateTotal - gatePassed - gateFailed);
+  const reviewByCriterion = new Map(run.review?.criteria.map((criterion) => [criterion.id, criterion]) || []);
+  const deploymentAdvanced = seven.indexOf(run.phase) > seven.indexOf('deployment');
+  const remoteCiPassed =
+    !!run.prUrl &&
+    (deploymentAdvanced || ['approval', 'release', 'smoke', 'monitoring', 'completed'].includes(run.step));
   return (
     <>
       <header className="detail-head">
@@ -349,15 +490,30 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
         <div className="detail-title">
           <div>
             <p className="eyebrow">RUN {run.id.slice(0, 8).toUpperCase()}</p>
-            <h1>{run.contract?.summary || run.prompt}</h1>
+            <h1>{shortRunTitle(run)}</h1>
             <p>
               {run.policy.owner}/{run.policy.repo} · candidate{' '}
               {(run.candidateSha || run.candidateDigest)?.slice(0, 9) || 'pending'}
             </p>
+            <details className="request-details">
+              <summary>View original request</summary>
+              <p>{run.prompt}</p>
+            </details>
           </div>
-          <Badge status={run.status} />
+          <div className="detail-actions">
+            <Badge status={run.status} />
+            {run.prUrl && (
+              <a className="button quiet" href={run.prUrl} target="_blank" rel="noreferrer">
+                <Github />
+                Pull request
+              </a>
+            )}
+            <a className="button quiet" href={`/api/runs/${id}/report`}>
+              <FileCheck2 />
+              Evidence report
+            </a>
+          </div>
         </div>
-        <PhaseRail run={run} />
       </header>
       {error && (
         <div className="notice error">
@@ -412,144 +568,533 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           </button>
         </div>
       )}
-      <div className="detail-grid">
-        <section className="panel span2">
-          <div className="panel-head">
-            <div>
-              <h2>Lifecycle evidence</h2>
-              <p>{run.step.replaceAll('-', ' ')}</p>
-            </div>
-            <a className="button quiet" href={`/api/runs/${id}/report`}>
-              <FileCheck2 />
-              Report
-            </a>
+      {run.status === 'needs_review' && (
+        <div className="decision native-review">
+          <Search />
+          <div>
+            <strong>Codex native review required</strong>
+            <p>
+              In this project, type <code>/review</code> and choose <b>Review uncommitted changes</b>. The dedicated
+              reviewer reports findings without modifying the working tree; return here afterward to continue the run.
+            </p>
           </div>
-          <div className="evidence-grid">
-            <Evidence title="Planning" icon={Clock3} ready={!!run.plan}>
-              <p>{run.plan?.scope || 'Pending'}</p>
-              {run.plan && (
-                <small>
-                  {run.plan.estimatedEffort} · {run.plan.costEstimate}
-                </small>
-              )}
-            </Evidence>
-            <Evidence title="Requirements" icon={Archive} ready={!!run.contract}>
-              <p>{run.contract ? `${run.contract.criteria.length} acceptance criteria` : 'Pending'}</p>
-              {run.contract?.criteria.slice(0, 3).map((c) => (
-                <small key={c.id}>
-                  {c.id} · {c.description}
-                </small>
-              ))}
-            </Evidence>
-            <Evidence title="Design" icon={Boxes} ready={!!run.design}>
-              <p>{run.design?.architecture || 'Pending'}</p>
-            </Evidence>
-            <Evidence title="Implementation" icon={TerminalSquare} ready={!!run.candidateDigest}>
-              <p>{run.candidateDigest ? `Verified tree ${run.candidateDigest.slice(0, 12)}` : 'Pending'}</p>
-              <small>{run.attempt} repair attempts</small>
-            </Evidence>
-          </div>
-        </section>
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>Quality gates</h2>
-              <p>Bound to candidate revision</p>
-            </div>
-            <ShieldCheck />
-          </div>
-          <div className="gate-list">
-            {!run.gates.length ? (
-              <Empty title="Verification pending" text="Gates appear after implementation." compact />
-            ) : (
-              run.gates.map((g) => (
-                <div className="gate" key={g.id}>
-                  <span className={g.status}>
-                    <GateIcon status={g.status} />
+        </div>
+      )}
+      <section className={`run-focus ${guidance.action ? 'action' : ''}`}>
+        <div className="focus-icon">{guidance.action ? <UserCheck /> : <Activity />}</div>
+        <div className="focus-copy">
+          <span className="eyebrow">{guidance.action ? 'ACTION REQUIRED' : 'HAPPENING NOW'}</span>
+          <h2>{guidance.label}</h2>
+          <p>{guidance.detail}</p>
+          {latestEvent && <small>Latest update: {latestEvent.message}</small>}
+        </div>
+        <div className="focus-phase">
+          <strong>{phaseNumber}/7</strong>
+          <span>{run.phase}</span>
+        </div>
+        <PhaseRail run={run} />
+      </section>
+      <section className="run-facts" aria-label="Run summary">
+        <div>
+          <span>Mode</span>
+          <strong>{run.mode || 'delivery'}</strong>
+        </div>
+        <div>
+          <span>Repository</span>
+          <strong>
+            {run.policy.owner}/{run.policy.repo}
+          </strong>
+        </div>
+        <div>
+          <span>Policy</span>
+          <strong>Version {run.policy.version}</strong>
+        </div>
+        <div>
+          <span>Revision</span>
+          <strong>{(run.candidateSha || run.candidateDigest || run.workspace.headSha).slice(0, 9)}</strong>
+        </div>
+      </section>
+      <nav className="run-detail-nav" aria-label="Seven SDLC phases">
+        {seven.map((phase, index) => (
+          <a href={`#phase-${phase}`} key={phase}>
+            <span>{index + 1}</span>
+            {phase[0].toUpperCase() + phase.slice(1)}
+          </a>
+        ))}
+      </nav>
+      <div className="lifecycle-sections">
+        <PhaseSection
+          number={1}
+          phase="planning"
+          title="Planning"
+          description="Define the scope, execution approach, resources, schedule, dependencies, and delivery risks."
+          icon={Archive}
+          run={run}
+        >
+          {run.plan ? (
+            <div className="phase-grid">
+              <article className="phase-card">
+                <div className="subsection-head">
+                  <span>Scope and execution plan</span>
+                  <CheckCircle2 />
+                </div>
+                <p className="phase-lead">{run.plan.scope}</p>
+                <ol className="plan-steps">
+                  {run.plan.steps.map((step, index) => (
+                    <li key={`${index}-${step}`}>
+                      <span>{index + 1}</span>
+                      <p>{step}</p>
+                    </li>
+                  ))}
+                </ol>
+                <div className="phase-tags">
+                  <span>
+                    {run.plan.source === 'codex-plan-mode' ? 'Native Codex Plan mode' : 'Legacy planning record'}
                   </span>
-                  <div>
-                    <strong>{g.label}</strong>
-                    <small>
-                      {g.tests === null ? 'Command' : `${g.tests} tests`} · {g.durationMs}ms
-                    </small>
-                  </div>
-                  <Badge status={g.status} />
+                  <span>{run.plan.estimatedEffort}</span>
+                  <span>{run.plan.costEstimate}</span>
                 </div>
-              ))
-            )}
-          </div>
-        </section>
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>Self-review</h2>
-              <p>Acceptance evidence checked in the same Codex session</p>
+              </article>
+              <article className="phase-card phase-context">
+                <div className="subsection-head">
+                  <span>Schedule and planning context</span>
+                </div>
+                <div className="detail-list-grid">
+                  <DetailList title="Schedule" items={run.plan.schedule} />
+                  <DetailList title="Dependencies" items={run.plan.dependencies} />
+                  <DetailList title="Planning risks" items={run.plan.risks} />
+                </div>
+              </article>
             </div>
-            <Search />
-          </div>
-          {run.review ? (
+          ) : (
+            <Empty
+              title="Planning pending"
+              text="Scope, schedule, dependencies, and execution steps will appear here."
+              compact
+            />
+          )}
+        </PhaseSection>
+
+        <PhaseSection
+          number={2}
+          phase="requirements"
+          title="Requirements"
+          description="Turn the request into measurable behavior, boundaries, assumptions, and acceptance evidence."
+          icon={BookOpen}
+          run={run}
+        >
+          {run.contract ? (
             <>
-              <p className="review-summary">{run.review.summary}</p>
-              {run.review.findings.map((f) => (
-                <div className="finding" key={f.id}>
-                  <span className={f.severity}>{f.severity}</span>
-                  <div>
-                    <strong>
-                      {f.file}:{f.line}
-                    </strong>
-                    <p>{f.description}</p>
+              <p className="phase-lead">{run.contract.summary}</p>
+              <div className="phase-grid requirements-grid">
+                <article className="phase-card">
+                  <div className="subsection-head">
+                    <span>Acceptance criteria</span>
+                    <strong>{run.contract.criteria.length}</strong>
                   </div>
-                </div>
-              ))}
+                  <div className="criteria-list">
+                    {run.contract.criteria.map((criterion) => {
+                      const verdict = reviewByCriterion.get(criterion.id);
+                      return (
+                        <div className={verdict?.satisfied ? 'satisfied' : ''} key={criterion.id}>
+                          <span>{verdict?.satisfied ? <Check /> : <Circle />}</span>
+                          <div>
+                            <strong>{criterion.id}</strong>
+                            <p>{criterion.description}</p>
+                            {verdict?.evidence && <small>{verdict.evidence}</small>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </article>
+                <article className="phase-card phase-context">
+                  <div className="subsection-head">
+                    <span>Scope boundaries and assumptions</span>
+                  </div>
+                  <div className="detail-list-grid">
+                    <DetailList title="Assumptions" items={run.contract.assumptions} />
+                    <DetailList title="Non-goals" items={run.contract.nonGoals} />
+                    <DetailList title="Requirement risks" items={run.contract.risks} />
+                  </div>
+                  <div className="phase-callout">
+                    <span>Clarification</span>
+                    <p>{run.question || run.answer || 'No stakeholder clarification is open.'}</p>
+                  </div>
+                </article>
+              </div>
             </>
           ) : (
-            <Empty title="Review pending" text="Review begins after automated gates pass." compact />
+            <Empty
+              title="Requirements pending"
+              text="Acceptance criteria and scope boundaries will appear here."
+              compact
+            />
           )}
-        </section>
-        <section className="panel span2">
-          <div className="panel-head">
-            <div>
-              <h2>Activity</h2>
-              <p>Durable controller events</p>
-            </div>
-            <Activity />
-          </div>
-          <div className="timeline">
-            {bundle.events
-              .slice()
-              .reverse()
-              .map((e) => (
-                <div key={e.id}>
-                  <span>
-                    <Circle />
-                  </span>
-                  <time>{new Date(e.time).toLocaleTimeString()}</time>
-                  <b>{e.kind.replaceAll('-', ' ')}</b>
-                  <p>{e.message}</p>
+        </PhaseSection>
+
+        <PhaseSection
+          number={3}
+          phase="design"
+          title="Design"
+          description="Describe the architecture, interfaces, data, user experience, security, and compatibility."
+          icon={Boxes}
+          run={run}
+        >
+          {run.design ? (
+            <>
+              <p className="phase-lead">{run.design.architecture}</p>
+              <div className="phase-card">
+                <div className="detail-list-grid design-grid">
+                  <DetailList title="API contracts" items={run.design.apiContracts} />
+                  <DetailList title="Data changes" items={run.design.dataChanges} />
+                  <DetailList title="UI behavior" items={run.design.uiBehavior} />
+                  <DetailList title="Security" items={run.design.security} />
                 </div>
-              ))}
-          </div>
-        </section>
-        <section className="panel">
-          <div className="panel-head">
+                <div className="phase-callout">
+                  <span>Compatibility</span>
+                  <p>{run.design.compatibility}</p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <Empty title="Design pending" text="Architecture and implementation decisions will appear here." compact />
+          )}
+        </PhaseSection>
+
+        <PhaseSection
+          number={4}
+          phase="coding"
+          title="Coding"
+          description="Implement the approved design in the developer's existing checkout and repair discovered defects."
+          icon={Code2}
+          run={run}
+        >
+          <div className="implementation-facts">
             <div>
-              <h2>Artifacts</h2>
-              <p>Hashed source and evidence</p>
+              <span>Current step</span>
+              <strong>{run.step.replaceAll('-', ' ')}</strong>
             </div>
+            <div>
+              <span>Workspace branch</span>
+              <strong>{run.workspace.branch}</strong>
+            </div>
+            <div>
+              <span>Starting revision</span>
+              <strong>{run.workspace.headSha.slice(0, 9)}</strong>
+            </div>
+            <div>
+              <span>Candidate tree</span>
+              <strong>{run.candidateDigest?.slice(0, 9) || 'Not verified'}</strong>
+            </div>
+            <div>
+              <span>Candidate commit</span>
+              <strong>{run.candidateSha?.slice(0, 9) || 'Not published'}</strong>
+            </div>
+            <div>
+              <span>Repair attempts</span>
+              <strong>{run.attempt}</strong>
+            </div>
+          </div>
+          <article className="phase-card coding-activity">
+            <div className="subsection-head">
+              <span>Implementation activity</span>
+              <small>{codingEvents.length ? `${codingEvents.length} recent updates` : 'No coding updates yet'}</small>
+            </div>
+            {codingEvents.length ? (
+              <div className="compact-events">
+                {codingEvents.map((event) => (
+                  <div key={event.id}>
+                    <time>{new Date(event.time).toLocaleTimeString()}</time>
+                    <p>{event.message}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Empty
+                title="Implementation pending"
+                text="Coding updates will appear after the design checkpoint."
+                compact
+              />
+            )}
+          </article>
+        </PhaseSection>
+
+        <PhaseSection
+          number={5}
+          phase="testing"
+          title="Testing"
+          description="Run every configured quality gate and review the verified candidate against acceptance criteria."
+          icon={ShieldCheck}
+          run={run}
+        >
+          {run.design && (
+            <div className="phase-callout test-strategy">
+              <span>Test strategy</span>
+              <p>{run.design.testStrategy}</p>
+            </div>
+          )}
+          <div className="verification-summary" aria-label="Verification summary">
+            <div>
+              <span>Total gates</span>
+              <strong>{gateTotal}</strong>
+            </div>
+            <div className="passed">
+              <span>Passed</span>
+              <strong>{gatePassed}</strong>
+            </div>
+            <div className={gateFailed ? 'failed' : ''}>
+              <span>Failed</span>
+              <strong>{gateFailed}</strong>
+            </div>
+            <div>
+              <span>Pending</span>
+              <strong>{gatePending}</strong>
+            </div>
+          </div>
+          <div className="phase-grid testing-grid">
+            <div className="phase-card">
+              <div className="subsection-head">
+                <span>Quality gates</span>
+                <small>{run.candidateDigest ? `Tree ${run.candidateDigest.slice(0, 9)}` : 'Candidate pending'}</small>
+              </div>
+              <div className="gate-list">
+                {!run.gates.length ? (
+                  <Empty title="Verification pending" text="Configured gates appear after implementation." compact />
+                ) : (
+                  run.gates.map((gate) => (
+                    <div className="gate" key={gate.id}>
+                      <span className={gate.status}>
+                        <GateIcon status={gate.status} />
+                      </span>
+                      <div>
+                        <strong>{gate.label}</strong>
+                        <small>
+                          {gate.cached ? 'Reused' : gate.tests === null ? 'Command' : `${gate.tests} tests`} ·{' '}
+                          {gate.durationMs}ms
+                        </small>
+                        {gate.findings.map((finding) => (
+                          <em key={finding}>{finding}</em>
+                        ))}
+                      </div>
+                      {gate.artifactId && (
+                        <a className="gate-evidence" href={`/api/artifacts/${gate.artifactId}`}>
+                          Evidence
+                        </a>
+                      )}
+                      <Badge status={gate.status} />
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+            <div className="phase-card">
+              <div className="subsection-head">
+                <span>Native Codex review</span>
+                <Search />
+              </div>
+              {run.review ? (
+                <>
+                  <div className="phase-tags review-provenance">
+                    <span>
+                      {run.review.source === 'codex-native-review' ? 'Codex /review' : 'Legacy review record'}
+                    </span>
+                    <span>Scope: {run.review.scope || 'legacy'}</span>
+                  </div>
+                  <p className="review-summary">{run.review.summary}</p>
+                  {!run.review.findings.length && (
+                    <div className="review-clear">
+                      <CheckCircle2 /> No review findings
+                    </div>
+                  )}
+                  {run.review.findings.map((finding) => (
+                    <div className="finding" key={finding.id}>
+                      <span className={finding.severity}>{finding.severity}</span>
+                      <div>
+                        <strong>
+                          {finding.file}:{finding.line}
+                        </strong>
+                        <p>{finding.description}</p>
+                        <small>{finding.correction}</small>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <Empty
+                  title={run.status === 'needs_review' ? 'Native review required' : 'Review pending'}
+                  text={
+                    run.status === 'needs_review'
+                      ? 'Type /review in Codex and choose Review uncommitted changes.'
+                      : 'Codex /review begins after automated gates pass.'
+                  }
+                  compact
+                />
+              )}
+            </div>
+          </div>
+        </PhaseSection>
+
+        <PhaseSection
+          number={6}
+          phase="deployment"
+          title="Deployment"
+          description="Publish the verified revision, pass remote CI, obtain approval when required, and release safely."
+          icon={Rocket}
+          run={run}
+        >
+          <div className="delivery-grid">
+            <article className="delivery-step">
+              <span>1 · Publication</span>
+              <strong>{run.prUrl ? 'Pull request available' : 'Pending verified code'}</strong>
+              <p>
+                {run.prUrl
+                  ? `Candidate ${run.candidateSha?.slice(0, 9)} is published for review.`
+                  : 'Begins after testing and native Codex review pass.'}
+              </p>
+              {run.prUrl && (
+                <a className="text-link" href={run.prUrl} target="_blank" rel="noreferrer">
+                  <Github /> Open pull request
+                </a>
+              )}
+            </article>
+            <article className="delivery-step">
+              <span>2 · Remote CI</span>
+              <strong>
+                {run.step === 'remote-ci' ? 'Checks running' : remoteCiPassed ? 'Checks passed' : 'Pending'}
+              </strong>
+              <p>Required repository checks must pass for the exact published commit.</p>
+            </article>
+            <article className="delivery-step">
+              <span>3 · Approval</span>
+              <strong>
+                {!run.policy.deployment.enabled
+                  ? 'Not required by policy'
+                  : run.approval?.approvedBy
+                    ? `Approved by ${run.approval.approvedBy}`
+                    : run.status === 'awaiting_approval'
+                      ? 'Waiting for user'
+                      : 'Pending'}
+              </strong>
+              <p>
+                {run.policy.deployment.enabled
+                  ? `Only the dashboard can authorize ${run.policy.deployment.environment}.`
+                  : 'This repository completes after its pull request and required CI checks pass.'}
+              </p>
+            </article>
+            <article className="delivery-step">
+              <span>4 · Release</span>
+              <strong>
+                {run.deployment?.releasedAt ? 'Released' : run.policy.deployment.enabled ? 'Pending' : 'Not configured'}
+              </strong>
+              <p>
+                {run.deployment?.releasedAt
+                  ? `${run.policy.deployment.environment} released at ${new Date(run.deployment.releasedAt).toLocaleString()}.`
+                  : run.policy.deployment.enabled
+                    ? `Workflow ${run.policy.deployment.workflow} runs after approval.`
+                    : 'No automated environment release is configured for this policy.'}
+              </p>
+            </article>
+          </div>
+          <div className="phase-actions">
+            <a className="button quiet" href={`/api/runs/${id}/report`}>
+              <FileCheck2 /> Evidence report
+            </a>
+            {run.status === 'awaiting_approval' && (
+              <button className="button primary" onClick={() => setApprove(true)}>
+                <Rocket /> Review deployment
+              </button>
+            )}
+          </div>
+        </PhaseSection>
+
+        <PhaseSection
+          number={7}
+          phase="maintenance"
+          title="Maintenance"
+          description="Keep the durable delivery record, monitor released software, and preserve evidence for future support."
+          icon={Wrench}
+          run={run}
+        >
+          <div className="maintenance-summary">
             <Database />
+            <div>
+              <strong>
+                {run.status === 'monitoring'
+                  ? 'Health monitoring is active'
+                  : run.status === 'completed'
+                    ? 'Lifecycle evidence is complete'
+                    : 'Maintenance begins after delivery'}
+              </strong>
+              <p>
+                {run.deployment?.healthy
+                  ? 'The released environment is healthy.'
+                  : 'Activity and evidence remain available here throughout the run.'}
+              </p>
+            </div>
           </div>
-          <div className="artifact-list">
-            {bundle.artifacts.map((a) => (
-              <a href={`/api/artifacts/${a.id}`} key={a.id}>
-                <FileCheck2 />
-                <span>
-                  <strong>{a.name}</strong>
-                  <small>sha256 {a.hash.slice(0, 12)}…</small>
-                </span>
-              </a>
-            ))}
+          <div className="history-grid">
+            <div className="phase-card history-pane">
+              <div className="subsection-head">
+                <span>Lifecycle activity</span>
+                <div>
+                  <small>{bundle.events.length} events</small>
+                  {bundle.events.length > 8 && (
+                    <button className="text-button" onClick={() => setShowAllEvents(!showAllEvents)}>
+                      {showAllEvents ? 'Show recent' : 'Show all activity'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {visibleEvents.length ? (
+                <div className="timeline">
+                  {visibleEvents.map((event) => (
+                    <div key={event.id}>
+                      <span>
+                        <Circle />
+                      </span>
+                      <time>{new Date(event.time).toLocaleTimeString()}</time>
+                      <div>
+                        <b>{event.kind.replaceAll('-', ' ')}</b>
+                        <p>{event.message}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Empty title="No activity yet" text="Lifecycle events will appear here." compact />
+              )}
+            </div>
+            <div className="phase-card history-pane">
+              <div className="subsection-head">
+                <span>Evidence ledger</span>
+                <div>
+                  <small>{bundle.artifacts.length} files</small>
+                  {bundle.artifacts.length > 8 && (
+                    <button className="text-button" onClick={() => setShowAllArtifacts(!showAllArtifacts)}>
+                      {showAllArtifacts ? 'Show recent' : 'Show all files'}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {visibleArtifacts.length ? (
+                <div className="artifact-list">
+                  {visibleArtifacts.map((artifact) => (
+                    <a href={`/api/artifacts/${artifact.id}`} key={artifact.id}>
+                      <FileCheck2 />
+                      <span>
+                        <strong>{artifact.name}</strong>
+                        <small>sha256 {artifact.hash.slice(0, 12)}…</small>
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              ) : (
+                <Empty title="No evidence files yet" text="Plans, reports, and logs will appear here." compact />
+              )}
+            </div>
           </div>
-        </section>
+        </PhaseSection>
       </div>
       {!['monitoring', 'completed', 'failed', 'cancelled'].includes(run.status) && (
         <button className="danger-link" onClick={() => action('cancel')}>
@@ -609,34 +1154,11 @@ function GateIcon({ status }: { status: string }) {
     <LoaderCircle className="spin" />
   );
 }
-function Evidence({
-  title,
-  icon: Icon,
-  ready,
-  children,
-}: {
-  title: string;
-  icon: React.ComponentType<{ size?: number }>;
-  ready: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className={`evidence ${ready ? 'ready' : ''}`}>
-      <div>
-        <span>
-          <Icon size={17} />
-        </span>
-        <strong>{title}</strong>
-        {ready ? <CheckCircle2 /> : <Circle />}
-      </div>
-      {children}
-    </div>
-  );
-}
 function RepositoriesPage() {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [profiles, setProfiles] = useState<Record<string, Repository['checks']>>({});
   const [available, setAvailable] = useState<GitHubRepository[]>([]);
+  const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
   const fresh = {
@@ -644,7 +1166,7 @@ function RepositoriesPage() {
     owner: '',
     repo: '',
     branch: 'main',
-    stack: 'typescript' as 'typescript' | 'python',
+    stack: 'typescript' as 'typescript' | 'python' | 'custom',
     checksJson: '',
     standards: '',
     requiredCiChecks: 'ci',
@@ -667,7 +1189,8 @@ function RepositoriesPage() {
         setProfiles(p);
         setAvailable(g);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
   useEffect(() => {
     load();
   }, []);
@@ -677,6 +1200,25 @@ function RepositoriesPage() {
     const [owner, repo] = selected.fullName.split('/');
     const stack = selected.language?.toLowerCase() === 'python' ? 'python' : 'typescript';
     setForm({ ...form, name: selected.name, owner, repo, branch: selected.defaultBranch, stack });
+  }
+  function edit(repository: Repository) {
+    setForm({
+      name: repository.name,
+      owner: repository.owner,
+      repo: repository.repo,
+      branch: repository.branch,
+      stack: repository.stack,
+      checksJson: JSON.stringify(repository.checks, null, 2),
+      standards: repository.standards,
+      requiredCiChecks: repository.requiredCiChecks.join(', '),
+      ciWaiver: repository.ciWaiver,
+      deploymentEnabled: repository.deployment.enabled,
+      healthUrl: repository.deployment.healthUrl,
+      workflow: repository.deployment.workflow,
+      rollbackWorkflow: repository.deployment.rollbackWorkflow,
+      environment: repository.deployment.environment,
+    });
+    setOpen(true);
   }
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -733,7 +1275,16 @@ function RepositoriesPage() {
           {error}
         </div>
       )}
-      {!available.length && !repos.length && (
+      {loading && (
+        <div className="notice">
+          <LoaderCircle className="spin" />
+          <div>
+            <strong>Loading repositories</strong>
+            <p>Reading saved policies and repositories allowed by GitHub.</p>
+          </div>
+        </div>
+      )}
+      {!loading && !available.length && !repos.length && (
         <div className="notice warning">
           <Github />
           <div>
@@ -758,7 +1309,10 @@ function RepositoriesPage() {
               <span>Policy v{r.version}</span>
               <span>{r.deployment.environment}</span>
             </div>
-            <PhaseRail run={{ phase: 'planning' } as Run} />
+            <button className="button quiet repo-edit" onClick={() => edit(r)}>
+              <Wrench />
+              Edit policy
+            </button>
           </article>
         ))}
       </div>
@@ -771,7 +1325,14 @@ function RepositoriesPage() {
         </section>
       )}
       {open && (
-        <Modal title="Add a repository" close={() => setOpen(false)}>
+        <Modal
+          title={
+            repos.some((r) => r.owner === form.owner && r.repo === form.repo)
+              ? 'Edit repository policy'
+              : 'Add a repository'
+          }
+          close={() => setOpen(false)}
+        >
           <form className="form" onSubmit={save}>
             <label>
               GitHub repository
@@ -795,11 +1356,12 @@ function RepositoriesPage() {
                 <select
                   value={form.stack}
                   onChange={(e) =>
-                    setForm({ ...form, stack: e.target.value as 'typescript' | 'python', checksJson: '' })
+                    setForm({ ...form, stack: e.target.value as 'typescript' | 'python' | 'custom', checksJson: '' })
                   }
                 >
                   <option value="typescript">TypeScript</option>
                   <option value="python">Python</option>
+                  <option value="custom">Custom</option>
                 </select>
               </label>
               <label>
@@ -843,9 +1405,19 @@ function RepositoriesPage() {
             <details>
               <summary>Advanced quality gates</summary>
               <p className="fine-print">
-                The selected stack provides a safe default. Add project-specific integration or E2E commands here when
-                required.
+                Recommended TypeScript gates include build, lint, types, unit, isolated browser E2E, secrets, SAST, and
+                dependency audit. Company-specific scanners can be added here.
               </p>
+              {profiles[form.stack] && (
+                <button
+                  type="button"
+                  className="button quiet"
+                  onClick={() => setForm({ ...form, checksJson: JSON.stringify(profiles[form.stack], null, 2) })}
+                >
+                  <RefreshCw />
+                  Use recommended gates
+                </button>
+              )}
               <textarea
                 rows={12}
                 value={form.checksJson || JSON.stringify(profiles[form.stack] || [], null, 2)}
@@ -1071,10 +1643,13 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
               Run <code>.\connect-codex.ps1</code> once. It updates your Codex configuration without changing the
               project. There is no second Codex login, clone, or Docker worker.
             </p>
+            <p>
+              Start feature work in native Plan mode so Codex can ask its normal questions. After you choose to
+              implement, the governed run begins. When Testing requests it, type <code>/review</code> in the same
+              project to run Codex's dedicated reviewer.
+            </p>
           </div>
-          <div>
-            <Badge status="monitoring" />
-          </div>
+          <SetupStatus label="Connected" />
         </section>
         <section className={`setup-card ${state?.github ? 'complete' : ''}`}>
           <div className="setup-number">2</div>
@@ -1110,7 +1685,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
               Create a GitHub token ↗
             </a>
           </div>
-          <div>{state?.github && <Badge status="monitoring" />}</div>
+          <div>{state?.github && <SetupStatus label="Connected" />}</div>
         </section>
         <section className={`setup-card ${state?.repositories ? 'complete' : ''}`}>
           <div className="setup-number">3</div>
@@ -1121,7 +1696,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
           </div>
           <div>
             {state?.repositories ? (
-              <Badge status="monitoring" />
+              <SetupStatus label="Configured" />
             ) : (
               <button className="button primary" onClick={() => navigate('repositories')}>
                 <GitBranch />
@@ -1132,6 +1707,14 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
         </section>
       </div>
     </>
+  );
+}
+function SetupStatus({ label }: { label: string }) {
+  return (
+    <span className="setup-status">
+      <CheckCircle2 />
+      {label}
+    </span>
   );
 }
 function SystemPage() {

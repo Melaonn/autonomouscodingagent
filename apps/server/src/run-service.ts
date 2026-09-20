@@ -7,6 +7,7 @@ import type {
   Repository,
   Review,
   Run,
+  RunMode,
   TaskContract,
   WorkspaceState,
 } from '../../../shared/types.js';
@@ -16,7 +17,7 @@ import { createOrUpdatePr, dispatch, githubConfigured, markReady, requiredChecks
 import { callIntegration } from './mcp.js';
 import { hash } from './security.js';
 
-const activeStatuses = new Set(['running', 'repairing', 'needs_input', 'awaiting_approval']);
+const activeStatuses = new Set(['running', 'repairing', 'needs_input', 'needs_review', 'awaiting_approval']);
 const now = () => new Date().toISOString();
 
 function failure(message: string, statusCode = 409): never {
@@ -77,7 +78,7 @@ export class RunService {
     if (!activeStatuses.has(run.status)) failure(`Run is ${run.status} and cannot accept lifecycle updates`);
   }
 
-  async create(repository: Repository, prompt: string, workspace: WorkspaceState, actor: string) {
+  async create(repository: Repository, prompt: string, workspace: WorkspaceState, mode: RunMode, actor: string) {
     const existing = (await this.store.runs()).find(
       (run) => run.repositoryId === repository.id && activeStatuses.has(run.status),
     );
@@ -120,6 +121,7 @@ export class RunService {
       repositoryId: repository.id,
       prompt,
       backend: 'codex',
+      mode,
       status: 'running',
       phase: 'planning',
       step: 'planning',
@@ -153,7 +155,7 @@ export class RunService {
     run.phase = 'requirements';
     run.step = 'analysis';
     await this.store.artifact(run, 'plan.json', JSON.stringify(plan, null, 2));
-    return this.record(run, actor, 'run.plan', 'stage', 'Planning checkpoint accepted');
+    return this.record(run, actor, 'run.plan', 'stage', 'Native Codex Plan mode checkpoint accepted');
   }
 
   async saveRequirements(id: string, contract: TaskContract, actor: string) {
@@ -273,30 +275,39 @@ export class RunService {
       });
     }
 
-    run.status = 'running';
-    run.step = 'self-review';
+    run.status = 'needs_review';
+    run.step = 'native-review';
     run.blocker = undefined;
     run.lastFailureSignature = undefined;
     run.repeatedFailures = 0;
-    return this.record(run, actor, 'run.verify', 'verification-passed', 'All configured checks passed', {
-      digest: candidateDigest,
-    });
+    return this.record(
+      run,
+      actor,
+      'run.verify',
+      'verification-passed',
+      'All configured checks passed; Codex native review required',
+      {
+        digest: candidateDigest,
+      },
+    );
   }
 
   async saveReview(id: string, review: Review, actor: string) {
     const run = await this.requireRun(id);
     this.requireActive(run);
+    if (run.status !== 'needs_review' || run.step !== 'native-review')
+      failure('Run is not awaiting Codex native review');
     if (!run.candidateDigest || run.gates.some((gate) => gate.required && gate.status !== 'pass'))
       failure('Current workspace has not passed verification');
     const expected = new Set(run.contract?.criteria.map((criterion) => criterion.id) || []);
     const reviewed = new Set(review.criteria.map((criterion) => criterion.id));
-    if (reviewed.size !== review.criteria.length) failure('Self-review contains duplicate acceptance criteria');
+    if (reviewed.size !== review.criteria.length) failure('Native review contains duplicate acceptance criteria');
     const missing = [...expected].filter((criterion) => !reviewed.has(criterion));
-    if (missing.length) failure(`Self-review omitted acceptance criteria: ${missing.join(', ')}`);
+    if (missing.length) failure(`Native review omitted acceptance criteria: ${missing.join(', ')}`);
     const unknown = [...reviewed].filter((criterion) => !expected.has(criterion));
-    if (unknown.length) failure(`Self-review contains unknown acceptance criteria: ${unknown.join(', ')}`);
+    if (unknown.length) failure(`Native review contains unknown acceptance criteria: ${unknown.join(', ')}`);
     run.review = review;
-    await this.store.artifact(run, 'self-review.json', JSON.stringify(review, null, 2));
+    await this.store.artifact(run, 'native-review.json', JSON.stringify(review, null, 2));
     const blocking = review.findings.filter((finding) => ['critical', 'high'].includes(finding.severity));
     const unresolved = review.criteria.filter((criterion) => !criterion.satisfied || !criterion.evidence.trim());
     if (blocking.length || unresolved.length) {
@@ -309,9 +320,25 @@ export class RunService {
       ].join('\n');
       return this.record(run, actor, 'run.review', 'review-failed', run.blocker);
     }
+    if (run.mode === 'validation') {
+      if (run.candidateDigest !== run.workspace.digest)
+        failure('Validation-only runs must leave the workspace unchanged; start a delivery run for code changes');
+      run.status = 'completed';
+      run.phase = 'maintenance';
+      run.step = 'validated';
+      run.blocker = undefined;
+      return this.record(
+        run,
+        actor,
+        'run.review',
+        'validation-completed',
+        'Validation completed with no workspace changes',
+      );
+    }
+    run.status = 'running';
     run.phase = 'deployment';
     run.step = 'publish';
-    return this.record(run, actor, 'run.review', 'review-passed', 'Self-review and acceptance evidence passed');
+    return this.record(run, actor, 'run.review', 'review-passed', 'Codex native review and acceptance evidence passed');
   }
 
   async publish(id: string, candidateDigest: string, candidateSha: string, branch: string, actor: string) {

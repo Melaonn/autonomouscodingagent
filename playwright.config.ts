@@ -1,28 +1,36 @@
 import 'dotenv/config';
 import { defineConfig } from '@playwright/test';
 
+const apiPort = Number(process.env.E2E_API_PORT || 4410);
+const webPort = Number(process.env.E2E_WEB_PORT || 5174);
+const apiUrl = `http://127.0.0.1:${apiPort}`;
+const webUrl = `http://127.0.0.1:${webPort}`;
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
   webServer: [
     {
       command: 'npm run dev -w apps/server',
-      url: 'http://127.0.0.1:4310/api/me',
-      reuseExistingServer: !process.env.CI,
+      url: `${apiUrl}/api/me`,
+      reuseExistingServer: false,
       timeout: 120_000,
       env: {
+        PORT: String(apiPort),
+        HOST: '127.0.0.1',
         SESSION_SECRET: process.env.SESSION_SECRET || 'e2e-session-secret-with-at-least-32-characters',
-        DATA_DIR: '.runtime/e2e',
-        PUBLIC_URL: 'http://127.0.0.1:5173',
+        DATA_DIR: `.runtime/e2e-${process.pid}`,
+        PUBLIC_URL: webUrl,
         GITHUB_TOKEN: '',
       },
     },
     {
       command: 'npm run dev -w apps/web',
-      url: 'http://127.0.0.1:5173',
-      reuseExistingServer: !process.env.CI,
+      url: webUrl,
+      reuseExistingServer: false,
       timeout: 120_000,
+      env: { VITE_PORT: String(webPort), VITE_API_URL: apiUrl },
     },
   ],
-  use: { baseURL: 'http://127.0.0.1:5173', headless: true, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
+  use: { baseURL: webUrl, headless: true, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
 });

@@ -53,9 +53,17 @@ if (Test-Path -LiteralPath $instructionsPath) {
   $existing = [string](Get-Content -LiteralPath $instructionsPath -Raw)
 }
 if ($null -eq $existing) { $existing = '' }
-if (-not $existing.Contains('<!-- sdlc-chat-integration -->')) {
-  Add-Content -LiteralPath $instructionsPath -Value ("`n" + $instructions) -Encoding utf8
+$startMarker = '<!-- sdlc-chat-integration -->'
+$endMarker = '<!-- /sdlc-chat-integration -->'
+$start = $existing.IndexOf($startMarker)
+if ($start -ge 0) {
+  $end = $existing.IndexOf($endMarker, $start)
+  $suffix = if ($end -ge 0) { $existing.Substring($end + $endMarker.Length) } else { '' }
+  $existing = $existing.Substring(0, $start).TrimEnd() + "`n" + $instructions.Trim() + $suffix
+} else {
+  $existing = $existing.TrimEnd() + "`n" + $instructions.Trim() + "`n"
 }
+[System.IO.File]::WriteAllText($instructionsPath, $existing.TrimStart(), [System.Text.UTF8Encoding]::new($false))
 Write-Output "Enabled automatic SDLC routing in $instructionsPath"
 
 if ($ProjectPath) {
@@ -67,4 +75,6 @@ if ($ProjectPath) {
 }
 
 Write-Output 'Codex is connected. Restart the Codex app or open a fresh CLI session.'
-Write-Output 'Open your existing project and ask Codex to build or fix something normally.'
+Write-Output 'Open your existing project, turn on Plan mode, and describe the feature or bug.'
+Write-Output 'After you accept the plan, Codex implements it through the governed lifecycle.'
+Write-Output 'When Testing asks for native review, type /review and choose Review uncommitted changes.'

@@ -6,6 +6,7 @@ import {
   phases,
   planSchema,
   reviewSchema,
+  runModeSchema,
   type Artifact,
   type Event,
   type Repository,
@@ -22,18 +23,23 @@ const runInput = { runId: z.string().uuid() };
 const active = new Set(['running', 'repairing']);
 
 function nextAction(run: Run) {
+  if (run.status === 'completed' && run.step === 'validated')
+    return 'Report that validation completed without workspace changes or publication, with its recorded evidence.';
   if (run.status === 'needs_input') return 'Ask the user the exact question, then call sdlc_answer.';
+  if (run.status === 'needs_review')
+    return 'Ask the developer to type /review in this Codex project and choose Review uncommitted changes. After the native reviewer reports in this chat, submit its exact findings and acceptance evidence with sdlc_review.';
   if (run.status === 'awaiting_approval')
     return 'Ask the user to approve or reject the exact deployment in the local dashboard.';
   if (run.status === 'repairing') return 'Fix the reported failures in this same checkout, then call sdlc_verify.';
   if (run.status !== 'running') return 'Report this exact status and its evidence. Do not claim a failed run passed.';
-  if (run.phase === 'planning') return 'Inspect the repository once, create the delivery plan, then call sdlc_plan.';
+  if (run.phase === 'planning')
+    return 'Record the native Codex Plan mode output that the developer already approved, then call sdlc_plan. Do not repeat resolved planning questions.';
   if (run.phase === 'requirements') return 'Derive measurable acceptance criteria, then call sdlc_requirements.';
   if (run.phase === 'design') return 'Create the technical blueprint and test strategy, then call sdlc_design.';
   if (run.phase === 'coding')
     return 'Implement in the current checkout, keeping progress visible, then call sdlc_verify.';
-  if (run.phase === 'testing' && run.step === 'self-review')
-    return 'Review the diff and evidence in this same session, then call sdlc_review.';
+  if (run.phase === 'testing' && run.step === 'native-review')
+    return 'Wait for Codex native /review findings, then call sdlc_review with their exact evidence.';
   if (run.phase === 'deployment' && run.step === 'publish')
     return 'Create a feature branch, commit and push the verified files, then call sdlc_publish.';
   if (run.phase === 'deployment' && run.step === 'remote-ci')
@@ -46,6 +52,7 @@ function summary(run: Run) {
     id: run.id,
     repository: `${run.policy.owner}/${run.policy.repo}`,
     prompt: run.prompt,
+    mode: run.mode || 'delivery',
     status: run.status,
     phase: run.phase,
     step: run.step,
@@ -81,7 +88,7 @@ export function createChatServer(api: ChatApi) {
     { name: 'sdlc', version: '0.3.0' },
     {
       instructions:
-        "Use these tools as the control plane for feature and bug work. The current Codex app or CLI conversation is the only coding agent: inspect and edit the developer's existing checkout, submit planning/requirements/design checkpoints, run sdlc_verify, repair failures in the same conversation, and publish only verified content. Never start another Codex process or clone the repository. Tool evidence, not model prose, decides completion. Deployment approval stays in the dashboard.",
+        "Use these tools as the control plane for feature and bug work. Native Codex Plan mode handles discovery and user questions before implementation. The current Codex app or CLI conversation is the only coding agent: record the approved native plan, inspect and edit the developer's existing checkout, run sdlc_verify, wait for native /review findings, repair failures in the same conversation, and publish only verified content. Never start another Codex process, clone the repository, simulate Plan mode, or replace /review with an ad hoc review. Tool evidence, not model prose, decides completion. Deployment approval stays in the dashboard.",
     },
   );
   const result = (value: unknown) => ({
@@ -127,14 +134,15 @@ export function createChatServer(api: ChatApi) {
     'sdlc_start',
     {
       description:
-        'Start a governed SDLC run in the current local checkout. Pass the absolute repository root and the complete user request. No clone or second agent is created.',
+        'Start a governed SDLC run in the current local checkout. Use delivery for change requests and validation only for explicitly non-mutating audits or smoke tests. Pass the absolute repository root and complete user request. No clone or second agent is created.',
       inputSchema: {
         workspaceRoot: z.string().min(1),
         prompt: z.string().min(10).max(100000),
+        mode: runModeSchema.default('delivery'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ workspaceRoot, prompt }) =>
+    ({ workspaceRoot, prompt, mode }) =>
       protect(async () => {
         const workspace = await inspectWorkspace(workspaceRoot);
         const repositories = await api.request<Repository[]>('/api/repositories');
@@ -151,6 +159,7 @@ export function createChatServer(api: ChatApi) {
         const created = await api.request<{ run: Run; reused: boolean }>('/api/runs', {
           repositoryId: repository.id,
           prompt,
+          mode,
           workspace: {
             branch: workspace.branch,
             headSha: workspace.headSha,
@@ -187,7 +196,8 @@ export function createChatServer(api: ChatApi) {
   server.registerTool(
     'sdlc_plan',
     {
-      description: 'Record the planning phase produced by this native Codex conversation.',
+      description:
+        'Record the plan the developer approved in native Codex Plan mode after they switch to implementation. Reuse its resolved questions; do not emulate Plan mode or re-plan.',
       inputSchema: { ...runInput, plan: planSchema },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -240,21 +250,61 @@ export function createChatServer(api: ChatApi) {
       inputSchema: { ...runInput, workspaceRoot: z.string().min(1) },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ runId, workspaceRoot }) =>
+    ({ runId, workspaceRoot }, extra) =>
       protect(async () => {
         const detail = await api.request<Detail>(`/api/runs/${runId}`);
         const workspace = await inspectWorkspace(workspaceRoot);
         assertRepository(workspace, detail.run);
         assertProtectedPaths(workspace, detail.run.policy);
-        const results = [];
-        for (const command of detail.run.policy.checks) {
-          await api.request(`/api/runs/${runId}/progress`, {
-            phase: 'testing',
-            step: command.id,
-            message: `Running ${command.label}`,
-          });
-          results.push({ commandId: command.id, result: await executeCheck(workspace.root, command) });
+        const checks = detail.run.policy.checks;
+        const results: { commandId: string; result: Awaited<ReturnType<typeof executeCheck>> }[] = new Array(
+          checks.length,
+        );
+        let notificationStep = 0;
+        const notify = async (message: string) => {
+          const progressToken = extra._meta?.progressToken;
+          if (progressToken === undefined) return;
+          notificationStep += 1;
+          await extra
+            .sendNotification({
+              method: 'notifications/progress',
+              params: { progressToken, progress: notificationStep, total: checks.length * 2, message },
+            })
+            .catch(() => undefined);
+        };
+        let eventQueue = Promise.resolve<unknown>(undefined);
+        const progress = (step: string, message: string) => {
+          eventQueue = eventQueue.then(() =>
+            api.request(`/api/runs/${runId}/progress`, { phase: 'testing', step, message }),
+          );
+          return eventQueue;
+        };
+        const runCheck = async (index: number) => {
+          const command = checks[index];
+          await notify(`Starting ${command.label}`);
+          await progress(command.id, `Running ${command.label}`);
+          const checkResult = await executeCheck(workspace.root, command);
+          results[index] = { commandId: command.id, result: checkResult };
+          const outcome = checkResult.exitCode === 0 ? 'passed' : 'failed';
+          const cacheNote = checkResult.cached ? ' using cached dependencies' : '';
+          const message = `${command.label} ${outcome}${cacheNote} in ${(checkResult.durationMs / 1000).toFixed(1)}s`;
+          await progress(command.id, message);
+          await notify(message);
+        };
+        for (const index of checks.map((_, index) => index).filter((index) => checks[index].kind === 'setup')) {
+          await runCheck(index);
         }
+        const pending = checks.map((_, index) => index).filter((index) => checks[index].kind !== 'setup');
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(3, pending.length) }, async () => {
+          while (cursor < pending.length) {
+            const index = pending[cursor];
+            cursor += 1;
+            await runCheck(index);
+          }
+        });
+        await Promise.all(workers);
+        await eventQueue;
         const verified = await inspectWorkspace(workspace.root);
         assertProtectedPaths(verified, detail.run.policy);
         if (verified.digest !== workspace.digest)
@@ -277,7 +327,7 @@ export function createChatServer(api: ChatApi) {
     'sdlc_review',
     {
       description:
-        'Record the current conversation self-review after all configured checks pass. Be explicit about findings and criterion evidence.',
+        'Record the exact findings from Codex native /review after all configured checks pass. Do not substitute an ad hoc review. Include its selected scope and evidence for every criterion.',
       inputSchema: { ...runInput, review: reviewSchema },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
@@ -342,7 +392,7 @@ export function createChatServer(api: ChatApi) {
     'sdlc_status',
     {
       description:
-        'Read lifecycle checkpoints, gates, self-review, activity and evidence. A bounded wait returns on change or after 20 seconds.',
+        'Read lifecycle checkpoints, gates, native Codex review, activity and evidence. A bounded wait returns on change or after 20 seconds.',
       inputSchema: {
         ...runInput,
         waitSeconds: z.number().int().min(0).max(20).default(0),
