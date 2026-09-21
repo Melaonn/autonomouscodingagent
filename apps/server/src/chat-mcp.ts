@@ -39,6 +39,7 @@ const nativeReviewSchema = z.object({
   summary: reviewSchema.shape.summary,
   findings: reviewSchema.shape.findings,
 });
+export type NativeReview = z.infer<typeof nativeReviewSchema>;
 const setupDecisionSchema = z.object({
   e2e: z.enum(['required', 'not_applicable']).default('required'),
   ci: z.enum(['create', 'preserve', 'waive']).default('create'),
@@ -117,6 +118,37 @@ function testGateIds(policy: Repository) {
       'Repository policy needs a required unit, integration, or E2E gate for test-backed acceptance criteria',
     );
   return testGateIds;
+}
+
+export async function submitNativeReview(api: ChatApi, runId: string, review: NativeReview) {
+  const detail = await api.request<Detail>(`/api/runs/${runId}`);
+  const criteria = (detail.run.contract?.criteria || []).map((criterion) => {
+    const blockingFinding = review.findings.find(
+      (finding) => finding.criterionId === criterion.id && ['critical', 'high'].includes(finding.severity),
+    );
+    if (criterion.evidence === 'test') {
+      const gates = criterion.checkIds.filter((id) =>
+        detail.run.gates.some((gate) => gate.id === id && gate.status === 'pass'),
+      );
+      return {
+        id: criterion.id,
+        satisfied: gates.length === criterion.checkIds.length && !blockingFinding,
+        evidence: gates.length ? `Passing gates: ${gates.join(', ')}` : '',
+      };
+    }
+    if (criterion.evidence === 'human')
+      return { id: criterion.id, satisfied: Boolean(detail.run.answer), evidence: detail.run.answer || '' };
+    return {
+      id: criterion.id,
+      satisfied: !blockingFinding,
+      evidence: blockingFinding ? '' : review.summary,
+    };
+  });
+  return api.request<Run>(`/api/runs/${runId}/review`, {
+    source: 'codex-native-review',
+    ...review,
+    criteria,
+  });
 }
 
 function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, policy: Repository) {
@@ -433,34 +465,7 @@ export function createChatServer(api: ChatApi) {
     },
     ({ runId, review }) =>
       protect(async () => {
-        const detail = await api.request<Detail>(`/api/runs/${runId}`);
-        const criteria = (detail.run.contract?.criteria || []).map((criterion) => {
-          const blockingFinding = review.findings.find(
-            (finding) => finding.criterionId === criterion.id && ['critical', 'high'].includes(finding.severity),
-          );
-          if (criterion.evidence === 'test') {
-            const gates = criterion.checkIds.filter((id) =>
-              detail.run.gates.some((gate) => gate.id === id && gate.status === 'pass'),
-            );
-            return {
-              id: criterion.id,
-              satisfied: gates.length === criterion.checkIds.length && !blockingFinding,
-              evidence: gates.length ? `Passing gates: ${gates.join(', ')}` : '',
-            };
-          }
-          if (criterion.evidence === 'human')
-            return { id: criterion.id, satisfied: Boolean(detail.run.answer), evidence: detail.run.answer || '' };
-          return {
-            id: criterion.id,
-            satisfied: !blockingFinding,
-            evidence: blockingFinding ? '' : review.summary,
-          };
-        });
-        const run = await api.request<Run>(`/api/runs/${runId}/review`, {
-          source: 'codex-native-review',
-          ...review,
-          criteria,
-        });
+        const run = await submitNativeReview(api, runId, review);
         return { ...summary(run), findings: review.findings.length };
       }),
   );

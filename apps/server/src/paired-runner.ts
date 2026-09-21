@@ -6,6 +6,8 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { finished } from 'node:stream/promises';
 import { z } from 'zod';
+import { ChatClient } from './chat-client.js';
+import { submitNativeReview } from './chat-mcp.js';
 
 const exec = promisify(execFile);
 
@@ -248,6 +250,12 @@ MANDATORY: your first tool call must be sdlc_start with this checkout's absolute
 This is a pre-authorized, noninteractive paired evaluation. The benchmark request itself is the developer's acceptance of a faithful implementation plan, so continue in this same session without pausing for plan approval. After implementation, call sdlc_verify with the required lifecycle checkpoint, repair every returned failure, and stop when verification asks for native review or reaches a verified delivery state. The repository policy is already prepared. Do all implementation work yourself; do not spawn, delegate, or use collaboration tools. Do not commit, push, publish, or deploy.
 `;
 
+const governedGateInstructions = `
+## Governed gate ownership
+
+Do not directly execute any full build, lint, test, security, or benchmark command listed in other environment instructions. Those commands are configured as controller gates and sdlc_verify owns their execution. Only run a focused command when debugging a concrete code defect or a failure returned by sdlc_verify.
+`;
+
 const reviewInstructions = `
 Perform only the requested native code review. Do not call MCP tools, start an SDLC run, modify files, or run the project's test suite. Compare the uncommitted diff with the complete original request included below. Inspect for correctness, regressions, security, and missing requirements. Your final response must be one JSON object with a summary string and a findings array. Each finding must contain id, severity, file, line, description, correction, and nullable criterionId. Return an empty findings array only when the implementation satisfies the complete request. Do not wrap the JSON in Markdown.
 `;
@@ -381,6 +389,7 @@ async function completeHarnessReview(
   result: VariantResult,
   outputDirectory: string,
   prompt: string,
+  api: ChatClient,
 ) {
   const state = result.harnessState;
   if (state?.status !== 'needs_review') return result;
@@ -419,10 +428,29 @@ async function completeHarnessReview(
   );
   if (review.exitCode !== 0) throw new Error(`${task.id}: native review failed; inspect ${reviewStderr}`);
   const reviewPayload = parseNativeReviewOutput(await readFile(reviewOutput, 'utf8'));
+  const reviewed = await submitNativeReview(api, state.runId, { scope: 'uncommitted', ...reviewPayload });
+  const reviewedState: HarnessState = {
+    runId: reviewed.id,
+    status: reviewed.status,
+    phase: reviewed.phase,
+    step: reviewed.step,
+    attempt: reviewed.attempt,
+  };
+  const initialEvents = await readFile(result.jsonl, 'utf8');
+  const reviewEvents = await readFile(reviewJsonl, 'utf8');
+  if (reviewed.status !== 'repairing') {
+    await writeFile(result.jsonl, `${initialEvents}\n${reviewEvents}`, 'utf8');
+    return {
+      ...result,
+      wallTimeMs: result.wallTimeMs + review.wallTimeMs,
+      completed: implementationComplete(reviewedState),
+      harnessState: reviewedState,
+      reviewJsonl,
+    };
+  }
   const followUp = [
-    `The independent native review for governed run ${state.runId} is complete.`,
-    `Call sdlc_review once with runId ${state.runId} and set its review argument exactly to the JSON below.`,
-    'If it returns repairing, fix every blocking finding and call sdlc_verify again without a checkpoint.',
+    `The independent native review for governed run ${state.runId} found blocking defects and has already been recorded by the controller.`,
+    'Fix every blocking finding below and call sdlc_verify again without a checkpoint.',
     'Stop when the run is verified and ready for publication. Do not commit, push, publish, or deploy.',
     JSON.stringify(reviewPayload),
   ].join('\n\n');
@@ -448,7 +476,7 @@ async function completeHarnessReview(
     resumeStderr,
   );
   const resumedEvents = await readFile(resumeJsonl, 'utf8');
-  const combined = `${await readFile(result.jsonl, 'utf8')}\n${await readFile(reviewJsonl, 'utf8')}\n${resumedEvents}`;
+  const combined = `${initialEvents}\n${reviewEvents}\n${resumedEvents}`;
   await writeFile(result.jsonl, combined, 'utf8');
   const finalState = parseHarnessState(combined);
   return {
@@ -479,6 +507,7 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
   if (token.length < 32)
     throw new Error(`${input.harness.tokenEnvironmentVariable} must contain the local control-plane token`);
   await mkdir(outputDirectory, { recursive: true });
+  const controlPlane = new ChatClient(input.harness.serverUrl, token);
   const homesRoot = join(outputDirectory, 'codex-homes');
   const baselineHome = join(homesRoot, 'baseline');
   const harnessHome = join(homesRoot, 'harness');
@@ -488,7 +517,7 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
     createCodexHome(
       harnessHome,
       sourceCodexHome,
-      `${headlessInstructions}\n${workflowInstructions}\n${environmentInstructions}`,
+      `${headlessInstructions}\n${workflowInstructions}\n${environmentInstructions}\n${governedGateInstructions}`,
       codexConfig(input, 'harness', token),
     ),
     createCodexHome(reviewerHome, sourceCodexHome, reviewInstructions, reviewCodexConfig(input)),
@@ -510,7 +539,16 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
     let harness: VariantResult | undefined;
     if (input.executionVariant !== 'baseline') {
       harness = await runInitial(input, task, 'harness', harnessRoot, harnessHome, prompt, outputDirectory);
-      harness = await completeHarnessReview(input, task, harnessHome, reviewerHome, harness, outputDirectory, prompt);
+      harness = await completeHarnessReview(
+        input,
+        task,
+        harnessHome,
+        reviewerHome,
+        harness,
+        outputDirectory,
+        prompt,
+        controlPlane,
+      );
     }
     results.push({
       id: task.id,

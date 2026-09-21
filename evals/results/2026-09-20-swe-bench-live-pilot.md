@@ -28,6 +28,10 @@ The governed candidate used 10.5% fewer total input tokens at the interruption p
 
 The corrected retry completed the controller-owned public gate and mandatory native review. The public gate passed and the reviewer returned zero findings, but official hidden grading still failed. The full governed lifecycle consumed 110.86 ChatGPT credits and more than twice the baseline token volume without improving the score. Some retry overhead came from a transposed run ID and two native-review integration defects discovered during the run; the totals above report actual consumption rather than removing that cost.
 
+## Cost-efficiency finding
+
+The measured implementation is not cost-efficient. Relative to the baseline, the completed governed retry used 2.59 times the total input, 2.70 times the uncached input, and 2.74 times the output for the same score. The audit found two systematic waste paths: common benchmark instructions told the governed agent to run the public gate directly even though `sdlc_verify` owned the same gate, and the runner resumed the implementation model merely to relay completed review JSON to the controller. Both paths were removed after this pilot. Review now receives the complete original request and is recorded directly through the controller API; the implementation model resumes only when review reports a blocking defect.
+
 ## Failure analysis
 
 Both agents correctly exempted `autofocus` on the `<dialog>` element itself. Both missed the hidden requirement that descendants of a dialog, such as `<dialog><input autofocus></dialog>`, must also be exempt. The official evaluator reported the same failing hidden validator case for both candidates: `a11y-no-autofocus`.
