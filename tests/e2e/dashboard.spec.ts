@@ -51,6 +51,23 @@ test('a signed-in user can approve a Codex pairing code', async ({ page, request
 });
 
 test('run detail explains the work in the seven SDLC phases without overflow', async ({ page }) => {
+  await page.addInitScript(() => {
+    const clipboardState = { writes: [] as string[], reject: false };
+    Object.defineProperty(window, 'clipboardTestState', {
+      configurable: true,
+      value: clipboardState,
+    });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          const state = Reflect.get(window, 'clipboardTestState') as typeof clipboardState;
+          if (state.reject) throw new DOMException('Clipboard access denied', 'NotAllowedError');
+          state.writes.push(text);
+        },
+      },
+    });
+  });
   await page.goto('/');
   const runId = await page.evaluate(async () => {
     const meResponse = await fetch('/api/me');
@@ -201,6 +218,38 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
 
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
   await page.getByRole('button', { name: /Run detail hierarchy test fixture/ }).click();
+
+  const copyRunId = page.getByRole('button', { name: 'Copy complete run ID' });
+  await copyRunId.click();
+  await expect(copyRunId).toHaveText('Copied');
+  expect(await page.evaluate(() => (Reflect.get(window, 'clipboardTestState') as { writes: string[] }).writes)).toEqual(
+    [runId],
+  );
+  await page.waitForTimeout(1_500);
+  await expect(copyRunId).toHaveText('Copied');
+  await expect(copyRunId).toHaveText('Copy', { timeout: 1_000 });
+
+  await copyRunId.focus();
+  await page.keyboard.press('Enter');
+  await expect(copyRunId).toHaveText('Copied');
+  expect(await page.evaluate(() => (Reflect.get(window, 'clipboardTestState') as { writes: string[] }).writes)).toEqual(
+    [runId, runId],
+  );
+
+  await page.evaluate(() => {
+    (Reflect.get(window, 'clipboardTestState') as { reject: boolean }).reject = true;
+  });
+  await copyRunId.click();
+  const copyError = page.getByRole('alert');
+  await expect(copyError).toContainText('Couldn’t copy the run ID');
+  await expect(copyError).toContainText(runId);
+
+  await page.evaluate(() => {
+    (Reflect.get(window, 'clipboardTestState') as { reject: boolean }).reject = false;
+  });
+  await copyRunId.click();
+  await expect(copyError).toHaveCount(0);
+  await expect(copyRunId).toHaveText('Copied');
 
   const navigation = page.getByRole('navigation', { name: 'Seven SDLC phases' });
   for (const label of [

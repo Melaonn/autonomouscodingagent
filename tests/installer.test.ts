@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { platform, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
@@ -21,7 +21,15 @@ describe('one-command MCP installer', () => {
     const credentialFile = join(root, 'credentials.json');
     const commandLog = join(root, 'codex-commands.txt');
     await mkdir(bin, { recursive: true });
-    await writeFile(join(bin, 'codex.cmd'), `@echo off\necho %*>>"${commandLog}"\nexit /b 0\n`);
+    if (platform() === 'win32') {
+      await writeFile(join(bin, 'codex.cmd'), `@echo off\necho %*>>"${commandLog}"\nexit /b 0\n`);
+    } else {
+      await writeFile(
+        join(bin, 'codex'),
+        `#!/usr/bin/env node\nconst { appendFileSync } = require('node:fs');\nappendFileSync(${JSON.stringify(commandLog)}, process.argv.slice(2).map((argument) => JSON.stringify(argument)).join(' ') + '\\n');\n`,
+        { mode: 0o755 },
+      );
+    }
 
     const accessToken = `sdlc_${'a'.repeat(64)}`;
     const server = createServer((request, response) => {
@@ -73,6 +81,7 @@ describe('one-command MCP installer', () => {
     expect(await readFile(join(codexHome, 'AGENTS.md'), 'utf8')).toContain('Governed SDLC workflow');
     const commands = await readFile(commandLog, 'utf8');
     expect(commands).toContain('"mcp" "remove" "sdlc"');
-    expect(commands).toContain('"mcp" "add" "sdlc" "--" "npx.cmd" "-y" "@melson/sdlc-mcp@0.1.2" "run"');
+    const npxCommand = platform() === 'win32' ? 'npx.cmd' : 'npx';
+    expect(commands).toContain(`"mcp" "add" "sdlc" "--" "${npxCommand}" "-y" "@melson/sdlc-mcp@0.1.2" "run"`);
   });
 });
