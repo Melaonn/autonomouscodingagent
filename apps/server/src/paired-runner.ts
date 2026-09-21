@@ -247,7 +247,7 @@ const headlessInstructions = `
 
 MANDATORY: your first tool call must be sdlc_start with this checkout's absolute repository root and the complete benchmark request. Do not inspect, edit, or run repository commands before that call. If sdlc_start is unavailable or fails, stop and report the blocker.
 
-This is a pre-authorized, noninteractive paired evaluation. The benchmark request itself is the developer's acceptance of a faithful implementation plan, so continue in this same session without pausing for plan approval. After implementation, call sdlc_verify with the required lifecycle checkpoint, repair every returned failure, and stop when verification asks for native review or reaches a verified delivery state. The repository policy is already prepared. Do all implementation work yourself; do not spawn, delegate, or use collaboration tools. Do not commit, push, publish, or deploy.
+This is a pre-authorized, noninteractive paired evaluation. Native Plan mode is unavailable in this headless session. The benchmark request itself is the developer's acceptance of a faithful implementation plan, so summarize that plan internally and continue in this same session without pausing or stopping because the session is in Default mode. Record the accepted plan through the lifecycle checkpoint on the first sdlc_verify call. After implementation, repair every returned failure, and stop when verification asks for native review or reaches a verified delivery state. The repository policy is already prepared. Do all implementation work yourself; do not spawn, delegate, or use collaboration tools. Do not commit, push, publish, or deploy.
 `;
 
 const governedGateInstructions = `
@@ -517,7 +517,7 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
     createCodexHome(
       harnessHome,
       sourceCodexHome,
-      `${headlessInstructions}\n${workflowInstructions}\n${environmentInstructions}\n${governedGateInstructions}`,
+      `${workflowInstructions}\n${environmentInstructions}\n${governedGateInstructions}\n${headlessInstructions}`,
       codexConfig(input, 'harness', token),
     ),
     createCodexHome(reviewerHome, sourceCodexHome, reviewInstructions, reviewCodexConfig(input)),
