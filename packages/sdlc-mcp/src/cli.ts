@@ -9,7 +9,7 @@ import { ChatClient } from '../../../apps/server/src/chat-client.js';
 import { createChatServer } from '../../../apps/server/src/chat-mcp.js';
 
 const DEFAULT_SERVER = 'https://sdlc-control-plane.onrender.com';
-const PACKAGE_SPEC = '@melson/sdlc-mcp@0.1.0';
+const PACKAGE_SPEC = '@melson/sdlc-mcp@0.1.1';
 const START_MARKER = '<!-- sdlc-chat-integration -->';
 const END_MARKER = '<!-- /sdlc-chat-integration -->';
 
