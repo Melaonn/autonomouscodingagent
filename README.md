@@ -19,11 +19,13 @@ For this local self-hosted demo, the application owner configures `.env` once wi
 ```dotenv
 GITHUB_CLIENT_ID=application_client_id
 GITHUB_CLIENT_SECRET=application_client_secret
-GITHUB_ALLOWED_USERS=comma_separated_github_logins
+GITHUB_ALLOWED_USERS=comma_separated_github_logins_or_*
 GITHUB_ADMIN_USERS=comma_separated_admin_logins
 ```
 
 In a deployed company instance, ActTrident would configure these values in its secret manager. Every developer would then see only the normal **Continue with GitHub** login. Login verifies identity only and does not request repository, organization, or workflow access.
+
+Set `GITHUB_ALLOWED_USERS=*` for a public demo. Every authenticated GitHub user then receives the operator role; only logins listed in `GITHUB_ADMIN_USERS` receive administrator access.
 
 1. Start the dashboard and API in PowerShell:
 

@@ -108,4 +108,53 @@ describe('dashboard authentication', () => {
       await store.close();
     }
   });
+
+  it('allows any GitHub identity as an operator when the allowlist is a wildcard', async () => {
+    vi.stubEnv('GITHUB_CLIENT_ID', 'client-id');
+    vi.stubEnv('GITHUB_CLIENT_SECRET', 'client-secret');
+    vi.stubEnv('GITHUB_ALLOWED_USERS', '*');
+    vi.stubEnv('GITHUB_ADMIN_USERS', 'admin-user');
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ access_token: 'oauth-access-token', scope: '' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ login: 'public-tester' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+    );
+    const store = await Store.open();
+    const app = await buildApi(store, new RunService(store));
+
+    try {
+      const authorization = await app.inject({ method: 'GET', url: '/auth/github' });
+      const location = new URL(authorization.headers.location!);
+      const state = location.searchParams.get('state');
+      const stateCookie = authorization.cookies.find((cookie) => cookie.name === 'oauth_state');
+      const callback = await app.inject({
+        method: 'GET',
+        url: `/auth/github/callback?code=temporary-code&state=${encodeURIComponent(state!)}`,
+        cookies: { oauth_state: stateCookie!.value },
+      });
+      const session = callback.cookies.find((cookie) => cookie.name === 'sdlc_session');
+      const me = await app.inject({
+        method: 'GET',
+        url: '/api/me',
+        cookies: { sdlc_session: session!.value },
+      });
+
+      expect(me.json()).toMatchObject({ user: { login: 'public-tester', role: 'operator' } });
+    } finally {
+      await app.close();
+      await store.close();
+    }
+  });
 });

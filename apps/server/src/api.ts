@@ -157,7 +157,8 @@ export async function buildApi(store: Store, runs: RunService) {
       .split(',')
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
-    if (allowed.length && !allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted');
+    if (allowed.length && !allowed.includes('*') && !allowed.includes(gh.login.toLowerCase()))
+      throw error(403, 'GitHub user is not allowlisted');
     const admins = (process.env.GITHUB_ADMIN_USERS || '')
       .split(',')
       .map((x) => x.trim().toLowerCase())

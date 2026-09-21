@@ -9,7 +9,7 @@ The repository includes a Render Blueprint that creates one free Node web servic
    - `LOCAL_MCP_TOKEN`: copy the value from the local `.env` file. It must be at least 32 characters.
    - `GITHUB_CLIENT_ID`: the installation-wide GitHub OAuth application client ID.
    - `GITHUB_CLIENT_SECRET`: the matching OAuth client secret.
-   - `GITHUB_ALLOWED_USERS`: comma-separated GitHub logins allowed to sign in.
+   - `GITHUB_ALLOWED_USERS`: comma-separated GitHub logins allowed to sign in, or `*` for a public demo.
    - `GITHUB_ADMIN_USERS`: comma-separated allowed logins that receive administrator access.
 3. Deploy the Blueprint and wait for `/healthz` to report healthy.
 4. In the GitHub OAuth application settings, change:
