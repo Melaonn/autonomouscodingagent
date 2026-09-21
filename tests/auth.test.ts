@@ -11,6 +11,20 @@ afterEach(() => {
 });
 
 describe('dashboard authentication', () => {
+  it('exposes a public deployment health check', async () => {
+    const store = await Store.open();
+    const app = await buildApi(store, new RunService(store));
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/healthz' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ status: 'ok' });
+    } finally {
+      await app.close();
+      await store.close();
+    }
+  });
+
   it('replaces an existing local browser session when OAuth becomes available', async () => {
     vi.stubEnv('GITHUB_CLIENT_ID', '');
     vi.stubEnv('GITHUB_CLIENT_SECRET', '');

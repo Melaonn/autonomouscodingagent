@@ -1,10 +1,13 @@
 import 'dotenv/config';
 import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
+const inferredPublicUrl = process.env.RENDER_EXTERNAL_HOSTNAME
+  ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`
+  : 'http://localhost:4310';
 export const config = {
   port: Number(process.env.PORT || 4310),
   host: process.env.HOST || '127.0.0.1',
-  publicUrl: process.env.PUBLIC_URL || 'http://localhost:4310',
+  publicUrl: process.env.PUBLIC_URL || inferredPublicUrl,
   production: process.env.NODE_ENV === 'production',
   secureCookies: process.env.COOKIE_SECURE
     ? process.env.COOKIE_SECURE === 'true'

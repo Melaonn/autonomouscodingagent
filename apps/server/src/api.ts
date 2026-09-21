@@ -126,6 +126,7 @@ export async function buildApi(store: Store, runs: RunService) {
       equalSecret(authorization.slice(prefix.length), config.localMcpToken)
     );
   };
+  app.get('/healthz', async () => ({ status: 'ok' }));
   app.get('/auth/github', async (_req, reply) => {
     if (!githubOAuthConfigured()) throw error(503, 'GitHub OAuth is not configured');
     const state = nonce();

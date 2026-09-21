@@ -112,3 +112,5 @@ The main components are:
 - `shared/types.ts`: validated lifecycle contracts.
 
 See [HOW-IT-WORKS.md](HOW-IT-WORKS.md) for the architecture and [docs/codex-chat.md](docs/codex-chat.md) for usage details.
+
+For a no-cost interview demonstration, use the included Render Blueprint and follow the [free Render deployment guide](docs/render-deployment.md). The free database expires after 30 days and is not intended for production company data.

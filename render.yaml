@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: sdlc-control-plane
+    runtime: node
+    plan: free
+    region: singapore
+    branch: codex/improve-sdlc-feedback
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: DATA_DIR
+        value: /tmp/sdlc
+      - key: DATABASE_URL
+        fromDatabase:
+          name: sdlc-control-plane-db
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: LOCAL_MCP_TOKEN
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_ALLOWED_USERS
+        sync: false
+      - key: GITHUB_ADMIN_USERS
+        sync: false
+
+databases:
+  - name: sdlc-control-plane-db
+    plan: free
+    region: singapore
+    databaseName: sdlc
+    user: sdlc
+    postgresMajorVersion: "17"
