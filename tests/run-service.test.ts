@@ -36,10 +36,13 @@ describe('validation-only lifecycle', () => {
       requiredCiChecks: [],
       ciWaiver: 'Validation fixture',
       protectedPaths: [],
+      testEvidence: { requiredForSourceChanges: true, sourcePaths: ['src/**'], testPaths: ['tests/**'] },
+      review: { mode: 'risk-based', minimumRisk: 'medium', sensitivePaths: [], maxChangedFiles: 8 },
       version: 1,
       createdAt: new Date().toISOString(),
       deployment: {
         enabled: false,
+        target: '',
         environment: 'staging',
         workflow: 'deploy.yml',
         rollbackWorkflow: 'rollback.yml',
@@ -113,6 +116,7 @@ describe('validation-only lifecycle', () => {
       run.id,
       digest,
       [{ commandId: 'unit', result: { exitCode: 0, stdout: '', stderr: '', durationMs: 1, files: {} } }],
+      [],
       'tester',
     );
     const completed = await service.saveReview(
@@ -123,11 +127,83 @@ describe('validation-only lifecycle', () => {
         summary: 'Validated',
         findings: [],
         criteria: [{ id: 'AC-1', satisfied: true, evidence: 'Unit gate passed' }],
+        requestCoverage: [
+          {
+            sourceQuote: 'Validate the existing checkout',
+            requirement: 'The existing checkout remains valid.',
+            status: 'satisfied',
+            evidence: 'The unit gate passed and review found no regression.',
+            file: 'index.js',
+            line: 1,
+          },
+        ],
       },
       'tester',
     );
     expect(completed.status).toBe('completed');
     expect(completed.step).toBe('validated');
     expect(completed.candidateSha).toBeUndefined();
+
+    const { run: delivery } = await service.create(repository, 'Add a profile label', workspace, 'delivery', 'tester');
+    await service.saveSpecification(
+      delivery.id,
+      {
+        plan: {
+          source: 'codex-plan-mode',
+          scope: 'Add a profile label',
+          steps: ['update presentation', 'verify'],
+          dependencies: [],
+          estimatedEffort: 'minutes',
+          costEstimate: 'local compute',
+          schedule: ['implementation', 'verification'],
+          risks: [],
+        },
+        requirements: {
+          summary: 'Profile label is visible',
+          criteria: [
+            {
+              id: 'AC-1',
+              description: 'Unit gate passes',
+              evidence: 'test',
+              checkIds: ['unit'],
+              category: 'functional',
+            },
+          ],
+          nonGoals: [],
+          assumptions: [],
+          risks: [],
+          clarification: null,
+        },
+        design: {
+          architecture: 'Existing presentation module',
+          apiContracts: [],
+          dataChanges: [],
+          uiBehavior: ['Show profile label'],
+          security: [],
+          compatibility: 'Backward compatible',
+          testStrategy: 'Run unit gate',
+        },
+        risk: { level: 'low', rationale: 'Localized presentation-only change' },
+      },
+      'tester',
+    );
+    const missingTests = await service.verify(
+      delivery.id,
+      digest,
+      [{ commandId: 'unit', result: { exitCode: 0, stdout: '', stderr: '', durationMs: 1, files: {} } }],
+      ['src/profile.tsx'],
+      'tester',
+    );
+    expect(missingTests.status).toBe('repairing');
+    expect(missingTests.gates.find((gate) => gate.id === 'changed-test-evidence')?.status).toBe('fail');
+    const verified = await service.verify(
+      delivery.id,
+      digest,
+      [{ commandId: 'unit', result: { exitCode: 0, stdout: '', stderr: '', durationMs: 1, files: {} } }],
+      ['src/profile.tsx', 'tests/profile.test.tsx'],
+      'tester',
+    );
+    expect(verified.step).toBe('publish');
+    expect(verified.reviewDecision).toEqual({ required: false, reasons: [] });
   });
 });

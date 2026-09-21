@@ -4,8 +4,9 @@ export class ChatClient {
   private csrf = '';
   private loginTask?: Promise<void>;
   readonly url: string;
+  private readonly localToken: string;
 
-  constructor(url: string) {
+  constructor(url: string, localToken = process.env.SDLC_CHAT_TOKEN || '') {
     const parsed = new URL(url);
     if (
       parsed.protocol !== 'http:' ||
@@ -19,12 +20,14 @@ export class ChatClient {
       throw new Error('SDLC chat requires a loopback HTTP URL, such as http://127.0.0.1:4310');
     }
     this.url = parsed.origin;
+    this.localToken = localToken;
   }
 
   private async login() {
     const response = await fetch(`${this.url}/api/me`, {
       redirect: 'error',
       signal: AbortSignal.timeout(15_000),
+      headers: this.localToken ? { authorization: `Bearer ${this.localToken}` } : undefined,
     });
     if (!response.ok) throw new Error(`Harness session failed (${response.status}). Check your local setup.`);
     this.cookie =
@@ -44,7 +47,7 @@ export class ChatClient {
       /^\/api\/repositories$/,
       /^\/api\/runs$/,
       /^\/api\/runs\/[\w-]+$/,
-      /^\/api\/runs\/[\w-]+\/(plan|requirements|design|progress|verify|review|publish|sync|answer|cancel|resume|report)$/,
+      /^\/api\/runs\/[\w-]+\/(plan|requirements|design|specification|progress|verify|review|publish|sync|answer|cancel|resume|report)$/,
     ];
     if (!allowed.some((pattern) => pattern.test(path))) throw new Error('Unsupported chat operation.');
     if (!this.cookie) {
@@ -65,9 +68,16 @@ export class ChatClient {
         this.cookie = '';
         this.csrf = '';
       }
+      let detail = '';
+      if (response.status >= 400 && response.status < 500) {
+        const payload = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined;
+        if (typeof payload?.error === 'string') detail = payload.error.slice(0, 2_000);
+      }
       // Never retry mutations automatically: a timed-out start may already exist.
       throw new Error(
-        `Harness request failed (${response.status}). Inspect sdlc_runs before retrying a start; use the dashboard for details.`,
+        detail
+          ? `Harness request failed (${response.status}): ${detail}`
+          : `Harness request failed (${response.status}). Inspect sdlc_status when a run ID is available, or use the dashboard for details.`,
       );
     }
     return (path.endsWith('/report') ? response.text() : response.json()) as Promise<T>;

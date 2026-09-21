@@ -417,17 +417,6 @@ nav button.selected::before {
   color: var(--ink);
 }
 
-.help-link {
-  display: inline-block;
-  color: var(--accent-strong);
-  font-size: 12px;
-  margin-top: 10px;
-  font-weight: 550;
-}
-.help-link:hover {
-  text-decoration: underline;
-}
-
 /* ---------- panels ---------- */
 
 .panel {
@@ -941,17 +930,6 @@ input::placeholder,
 textarea::placeholder {
   color: var(--muted);
   opacity: 0.75;
-}
-
-.inline-secret {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-  max-width: 640px;
-}
-.inline-secret input {
-  flex: 1;
-  min-width: 220px;
 }
 
 .error {
@@ -2106,7 +2084,6 @@ textarea::placeholder {
   margin: 0;
   max-width: 640px;
 }
-
 .device-login {
   display: flex;
   align-items: center;
@@ -2266,6 +2243,78 @@ textarea::placeholder {
 .stack.python {
   background: var(--amber-soft);
   color: var(--amber);
+}
+
+.stack.custom {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.setup-inventory {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.setup-inventory h3 {
+  margin: 0 0 4px;
+}
+
+.capability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.capability {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.capability > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.capability.ready > span {
+  color: var(--green);
+}
+
+.capability.missing > span,
+.capability.partial > span,
+.capability.needs_input > span {
+  color: var(--amber);
+}
+
+.capability small,
+.bootstrap-list span {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.bootstrap-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+.bootstrap-list li {
+  padding-left: 4px;
+}
+
+.bootstrap-list strong,
+.bootstrap-list span {
+  display: block;
 }
 
 .repo-card h2 {
@@ -2749,9 +2798,6 @@ textarea::placeholder {
   }
   .setup-card > div:last-child {
     grid-column: 2;
-  }
-  .inline-secret {
-    display: grid;
   }
   .device-login {
     width: 100%;

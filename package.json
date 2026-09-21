@@ -16,6 +16,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "evaluate": "npm run build -w apps/server && node apps/server/dist/eval-main.js",
+    "benchmark:run": "npm run build -w apps/server && node apps/server/dist/paired-run-main.js",
     "check": "npm run format:check && npm run typecheck && npm run lint && npm test && npm run build",
     "start": "node apps/server/dist/index.js"
   },
@@ -28,9 +30,11 @@
     "dotenv": "^17.2.3",
     "fastify": "^5.12.4",
     "lucide-react": "^0.468.0",
+    "minimatch": "^10.2.6",
     "pg": "^8.16.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "yaml": "^2.9.1",
     "zod": "^4.1.0"
   },
   "devDependencies": {

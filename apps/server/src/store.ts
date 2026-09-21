@@ -3,7 +3,16 @@ import pg from 'pg';
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { Artifact, Document, Event, Integration, Repository, Run, User } from '../../../shared/types.js';
+import type {
+  Artifact,
+  ContextSource,
+  Document,
+  Event,
+  Integration,
+  Repository,
+  Run,
+  User,
+} from '../../../shared/types.js';
 import { hash, redact } from './security.js';
 interface Sql {
   query<T extends Record<string, unknown>>(sql: string, values?: unknown[]): Promise<{ rows: T[] }>;
@@ -57,11 +66,30 @@ export class Store {
     await this.db.query(
       `CREATE TABLE IF NOT EXISTS secrets (id text PRIMARY KEY, value text NOT NULL, updated_at timestamptz DEFAULT now());`,
     );
+    await this.db.query(
+      `CREATE TABLE IF NOT EXISTS document_chunks (
+        document_id text NOT NULL,
+        chunk_index integer NOT NULL,
+        title text NOT NULL,
+        content text NOT NULL,
+        PRIMARY KEY(document_id, chunk_index)
+      );`,
+    );
+    await this.db.query(
+      `CREATE INDEX IF NOT EXISTS document_chunks_search ON document_chunks USING gin(to_tsvector('english', title || ' ' || content));`,
+    );
     await this.db.query(`INSERT INTO schema_migrations(version) VALUES (1) ON CONFLICT DO NOTHING;`);
     const version = await this.db.query<{ version: number }>('SELECT version FROM schema_migrations WHERE version=2');
     if (!version.rows.length) {
       await this.db.query("DELETE FROM runs WHERE data->'workspace' IS NULL");
       await this.db.query(`INSERT INTO schema_migrations(version) VALUES (2);`);
+    }
+    const searchVersion = await this.db.query<{ version: number }>(
+      'SELECT version FROM schema_migrations WHERE version=3',
+    );
+    if (!searchVersion.rows.length) {
+      for (const document of await this.documents()) await this.indexDocument(document);
+      await this.db.query(`INSERT INTO schema_migrations(version) VALUES (3);`);
     }
   }
   async put<T extends { id: string }>(kind: string, value: T) {
@@ -91,19 +119,70 @@ export class Store {
   integrations() {
     return this.list<Integration>('integration');
   }
-  async searchDocuments(query: string): Promise<Document[]> {
-    const terms =
-      query
-        .match(/[A-Za-z][A-Za-z0-9_-]{2,}/g)
-        ?.slice(0, 30)
-        .join(' OR ') || '';
-    if (!terms) return [];
-    return (
-      await this.db.query<{ data: Document }>(
-        `SELECT data FROM entities WHERE kind='document' AND to_tsvector('english',(data->>'title')||' '||(data->>'content')) @@ websearch_to_tsquery('english',$1) ORDER BY ts_rank(to_tsvector('english',data->>'content'),websearch_to_tsquery('english',$1)) DESC LIMIT 8`,
-        [terms],
+  private documentChunks(content: string, size = 1_800, overlap = 200) {
+    const chunks: string[] = [];
+    let start = 0;
+    while (start < content.length) {
+      let end = Math.min(start + size, content.length);
+      if (end < content.length) {
+        const paragraph = content.lastIndexOf('\n\n', end);
+        const line = content.lastIndexOf('\n', end);
+        const boundary = Math.max(paragraph, line);
+        if (boundary > start + size / 2) end = boundary;
+      }
+      const chunk = content.slice(start, end).trim();
+      if (chunk) chunks.push(chunk);
+      if (end >= content.length) break;
+      start = Math.max(start + 1, end - overlap);
+    }
+    return chunks;
+  }
+  private async indexDocument(document: Document) {
+    await this.db.query('DELETE FROM document_chunks WHERE document_id=$1', [document.id]);
+    for (const [index, content] of this.documentChunks(document.content).entries())
+      await this.db.query('INSERT INTO document_chunks(document_id,chunk_index,title,content) VALUES($1,$2,$3,$4)', [
+        document.id,
+        index,
+        document.title,
+        content,
+      ]);
+  }
+  async putDocument(document: Document) {
+    await this.put('document', document);
+    await this.indexDocument(document);
+  }
+  async searchDocuments(query: string): Promise<ContextSource[]> {
+    const search = query.trim().slice(0, 2_000);
+    if (!search) return [];
+    const rows = await this.db.query<{ data: Document; excerpt: string }>(
+      `WITH search_query AS (
+        SELECT websearch_to_tsquery('english', replace($1, ' ', ' OR ')) AS value
+      ), matches AS (
+        SELECT document_id, chunk_index,
+          ts_rank_cd(to_tsvector('english', title || ' ' || content), search_query.value) AS rank,
+          ts_headline('english', content, search_query.value,
+            'StartSel=<<, StopSel=>>, MaxFragments=3, MaxWords=100, MinWords=20') AS excerpt
+        FROM document_chunks, search_query
+        WHERE to_tsvector('english', title || ' ' || content) @@ search_query.value
+      ), ranked AS (
+        SELECT *, row_number() OVER (PARTITION BY document_id ORDER BY rank DESC, chunk_index) AS document_rank
+        FROM matches
       )
-    ).rows.map((x) => x.data);
+      SELECT entity.data, ranked.excerpt
+      FROM ranked
+      JOIN entities entity ON entity.id=ranked.document_id AND entity.kind='document'
+      WHERE ranked.document_rank=1
+      ORDER BY ranked.rank DESC
+      LIMIT 4`,
+      [search],
+    );
+    let remaining = 6_000;
+    return rows.rows.flatMap(({ data, excerpt }) => {
+      if (remaining <= 0) return [];
+      const bounded = excerpt.slice(0, Math.min(1_800, remaining));
+      remaining -= bounded.length;
+      return [{ id: data.id, title: data.title, version: data.version, hash: data.hash, excerpt: bounded }];
+    });
   }
   async insertRun(run: Run) {
     await this.db.query('INSERT INTO runs(id,repository_id,status,data) VALUES($1,$2,$3,$4)', [
@@ -207,6 +286,9 @@ export class Store {
   }
   async secret(id: string) {
     return (await this.db.query<{ value: string }>('SELECT value FROM secrets WHERE id=$1', [id])).rows[0]?.value;
+  }
+  async deleteSecret(id: string) {
+    await this.db.query('DELETE FROM secrets WHERE id=$1', [id]);
   }
   close() {
     return this.closer();

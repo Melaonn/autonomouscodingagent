@@ -1,32 +1,80 @@
 import { createPrivateKey, createSign } from 'node:crypto';
 import type { Repository, Run } from '../../../shared/types.js';
 import { readFile } from 'node:fs/promises';
+import spawn from 'cross-spawn';
 let cached: { token: string; expires: number } | undefined;
 let configuredToken = '';
+let localCredential: string | undefined;
+let localCredentialAttempted = false;
 export function setRepositoryToken(token: string) {
   configuredToken = token;
+  localCredential = undefined;
+  localCredentialAttempted = false;
 }
 const base64url = (value: string | Buffer) => Buffer.from(value).toString('base64url');
+async function gitCredentialToken() {
+  if (localCredentialAttempted) return localCredential || '';
+  localCredentialAttempted = true;
+  if (process.env.NODE_ENV === 'test' && process.env.GITHUB_USE_GIT_CREDENTIALS !== 'true') return '';
+  localCredential = await new Promise<string>((resolveToken) => {
+    const child = spawn('git', ['credential', 'fill'], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let output = '';
+    let settled = false;
+    const finish = (token = '') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveToken(token);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish();
+    }, 10_000);
+    child.stdout?.on('data', (chunk: Buffer) => {
+      output = (output + chunk.toString('utf8')).slice(-16_384);
+    });
+    child.on('error', () => finish());
+    child.on('close', (code) => {
+      if (code !== 0) return finish();
+      const values = Object.fromEntries(
+        output.split(/\r?\n/).flatMap((line) => {
+          const index = line.indexOf('=');
+          return index > 0 ? [[line.slice(0, index), line.slice(index + 1)]] : [];
+        }),
+      );
+      finish(typeof values.password === 'string' ? values.password : '');
+    });
+    child.stdin?.end('protocol=https\nhost=github.com\n\n');
+  });
+  return localCredential;
+}
 async function installationToken() {
-  if (configuredToken || process.env.GITHUB_TOKEN) return configuredToken || process.env.GITHUB_TOKEN!;
-  if (!process.env.GITHUB_APP_ID || !process.env.GITHUB_INSTALLATION_ID || !process.env.GITHUB_APP_PRIVATE_KEY_FILE)
-    throw new Error('GitHub repository credentials are not configured');
-  if (cached && cached.expires > Date.now() + 60_000) return cached.token;
-  const now = Math.floor(Date.now() / 1000);
-  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
-  const payload = base64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: process.env.GITHUB_APP_ID }));
-  const signer = createSign('RSA-SHA256');
-  signer.update(`${header}.${payload}`);
-  const key = createPrivateKey(await readFile(process.env.GITHUB_APP_PRIVATE_KEY_FILE));
-  const jwt = `${header}.${payload}.${signer.sign(key).toString('base64url')}`;
-  const response = await fetch(
-    `https://api.github.com/app/installations/${process.env.GITHUB_INSTALLATION_ID}/access_tokens`,
-    { method: 'POST', headers: headers(jwt) },
-  );
-  if (!response.ok) throw new Error(`GitHub App authentication failed: ${response.status}`);
-  const data = (await response.json()) as { token: string; expires_at: string };
-  cached = { token: data.token, expires: Date.parse(data.expires_at) };
-  return data.token;
+  if (configuredToken) return configuredToken;
+  if (process.env.GITHUB_APP_ID && process.env.GITHUB_INSTALLATION_ID && process.env.GITHUB_APP_PRIVATE_KEY_FILE) {
+    if (cached && cached.expires > Date.now() + 60_000) return cached.token;
+    const now = Math.floor(Date.now() / 1000);
+    const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const payload = base64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: process.env.GITHUB_APP_ID }));
+    const signer = createSign('RSA-SHA256');
+    signer.update(`${header}.${payload}`);
+    const key = createPrivateKey(await readFile(process.env.GITHUB_APP_PRIVATE_KEY_FILE));
+    const jwt = `${header}.${payload}.${signer.sign(key).toString('base64url')}`;
+    const response = await fetch(
+      `https://api.github.com/app/installations/${process.env.GITHUB_INSTALLATION_ID}/access_tokens`,
+      { method: 'POST', headers: headers(jwt) },
+    );
+    if (!response.ok) throw new Error(`GitHub App authentication failed: ${response.status}`);
+    const data = (await response.json()) as { token: string; expires_at: string };
+    cached = { token: data.token, expires: Date.parse(data.expires_at) };
+    return data.token;
+  }
+  const credential = await gitCredentialToken();
+  if (credential) return credential;
+  throw new Error('GitHub remote access is unavailable. Sign in with Git Credential Manager before publishing.');
 }
 export const repositoryToken = installationToken;
 function headers(token: string) {
@@ -156,7 +204,12 @@ export async function workflowStatus(repo: Repository, workflow: string, sha: st
     run,
   };
 }
-export async function oauthUser(code: string) {
+type OAuthTokenResponse = {
+  access_token?: string;
+  scope?: string;
+  error_description?: string;
+};
+export async function oauthUser(code: string, redirectUri: string) {
   if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET)
     throw new Error('GitHub OAuth is not configured');
   const response = await fetch('https://github.com/login/oauth/access_token', {
@@ -166,23 +219,24 @@ export async function oauthUser(code: string) {
       client_id: process.env.GITHUB_CLIENT_ID,
       client_secret: process.env.GITHUB_CLIENT_SECRET,
       code,
+      redirect_uri: redirectUri,
     }),
+    signal: AbortSignal.timeout(30_000),
   });
-  const auth = (await response.json()) as { access_token?: string; error_description?: string };
+  if (!response.ok) throw new Error(`GitHub OAuth exchange failed (${response.status})`);
+  const auth = (await response.json()) as OAuthTokenResponse;
   if (!auth.access_token) throw new Error(auth.error_description || 'OAuth exchange failed');
   const userResponse = await fetch('https://api.github.com/user', { headers: headers(auth.access_token) });
   if (!userResponse.ok) throw new Error('Unable to read GitHub user');
-  return userResponse.json() as Promise<{ login: string }>;
-}
-export async function validateRepositoryToken(token: string) {
-  const response = await fetch('https://api.github.com/user', {
-    headers: headers(token),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) throw new Error(`GitHub rejected this token (${response.status})`);
-  const user = (await response.json()) as { login: string };
-  if (!user.login) throw new Error('GitHub token did not identify a user');
-  return user.login;
+  const user = (await userResponse.json()) as { login?: string };
+  if (!user.login) throw new Error('GitHub OAuth did not identify a user');
+  return {
+    login: user.login,
+    scopes: (auth.scope || '')
+      .split(',')
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  };
 }
 export async function availableRepositories() {
   const repositories = await api<
@@ -205,13 +259,22 @@ export async function availableRepositories() {
       language: repo.language,
     }));
 }
-export function oauthUrl(state: string) {
-  return `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(process.env.GITHUB_CLIENT_ID || '')}&scope=read:user&state=${encodeURIComponent(state)}`;
+export function oauthUrl(state: string, redirectUri: string) {
+  const query = new URLSearchParams({
+    client_id: process.env.GITHUB_CLIENT_ID || '',
+    redirect_uri: redirectUri,
+    state,
+  });
+  return `https://github.com/login/oauth/authorize?${query.toString()}`;
 }
-export function githubConfigured() {
-  return !!(
+export function githubOAuthConfigured() {
+  return !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET);
+}
+export async function githubConfigured() {
+  if (
     configuredToken ||
-    process.env.GITHUB_TOKEN ||
     (process.env.GITHUB_APP_ID && process.env.GITHUB_INSTALLATION_ID && process.env.GITHUB_APP_PRIVATE_KEY_FILE)
-  );
+  )
+    return true;
+  return !!(await gitCredentialToken());
 }

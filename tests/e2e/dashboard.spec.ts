@@ -1,10 +1,29 @@
 import { expect, test } from '@playwright/test';
+
+test('GitHub is the default dashboard login when OAuth is configured', async ({ page }) => {
+  await page.route('**/api/me', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ user: null, csrf: '', githubOAuth: true }),
+    }),
+  );
+  await page.goto('/');
+  const login = page.getByRole('link', { name: 'Continue with GitHub' });
+  await expect(login).toBeVisible();
+  await expect(login).toHaveAttribute('href', '/auth/github');
+});
+
 test('local operator reaches native Codex and GitHub onboarding', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Connect and start' })).toBeVisible();
   await expect(page.getByText('Connected', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Use your Codex app or CLI' })).toBeVisible();
   await expect(page.getByText('There is no second Codex login')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'GitHub identity and local Git' })).toBeVisible();
+  await expect(page.getByText('End users never need to create an OAuth application')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Create GitHub OAuth App' })).toHaveCount(0);
+  await expect(page.getByLabel('GitHub token')).toHaveCount(0);
   await page.getByRole('button', { name: 'Runs', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Work in progress' })).toBeVisible();
   await expect(page.getByText('See what Codex is doing, what passed, and when you need to act.')).toBeVisible();
@@ -52,6 +71,7 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
       protectedPaths: [],
       deployment: {
         enabled: false,
+        target: '',
         environment: 'staging',
         workflow: 'deploy.yml',
         rollbackWorkflow: 'rollback.yml',
@@ -143,6 +163,7 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
     for (let index = 1; index <= 6; index += 1) {
       await post(`/api/runs/${id}/verify`, {
         candidateDigest: 'b'.repeat(40),
+        changedPaths: ['apps/web/src/main.tsx', 'tests/e2e/dashboard.spec.ts'],
         results: [
           {
             commandId: 'unit',
@@ -219,6 +240,16 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
           { id: 'AC3', satisfied: true, evidence: 'Native review confirmed the verification grouping.' },
           { id: 'AC4', satisfied: true, evidence: 'Unit evidence covers the fourth acceptance criterion.' },
         ],
+        requestCoverage: [
+          {
+            sourceQuote: 'dashboard lifecycle',
+            requirement: 'The dashboard presents the lifecycle clearly.',
+            status: 'satisfied',
+            evidence: 'The review and UI assertions cover the requested lifecycle presentation.',
+            file: 'apps/web/src/App.tsx',
+            line: 1,
+          },
+        ],
       }),
     });
     if (!response.ok) throw new Error(await response.text());
@@ -244,4 +275,112 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
     true,
   );
   expect(runId).toMatch(/^[0-9a-f-]{36}$/);
+});
+
+test('auto-detected repository setup is clearly presented for confirmation', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(async () => {
+    const me = (await (await fetch('/api/me')).json()) as { csrf: string };
+    const response = await fetch('/api/repositories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': me.csrf },
+      body: JSON.stringify({
+        name: 'Detected service',
+        owner: 'e2e-team',
+        repo: 'detected-service',
+        branch: 'main',
+        stack: 'python',
+        standards: '',
+        checks: [
+          {
+            id: 'unit',
+            label: 'unit',
+            argv: ['python', '-m', 'pytest'],
+            required: true,
+            kind: 'unit',
+            report: 'exit',
+            reportPath: '',
+            timeoutSeconds: 30,
+          },
+        ],
+        requiredCiChecks: [],
+        ciWaiver: 'Awaiting confirmation',
+        protectedPaths: ['.github/workflows/', '.sdlc/'],
+        setup: {
+          source: 'detected',
+          status: 'needs_confirmation',
+          confidence: 'high',
+          detectedAt: new Date().toISOString(),
+          confirmedAt: null,
+          evidence: ['Remote: e2e-team/detected-service', 'Python environment: uv'],
+          warnings: ['Required GitHub check names must be confirmed.'],
+          capabilities: [
+            {
+              id: 'unit',
+              label: 'Unit tests',
+              status: 'ready',
+              required: true,
+              evidence: ['tests/unit/'],
+            },
+            {
+              id: 'e2e',
+              label: 'End-to-end tests',
+              status: 'missing',
+              required: true,
+              evidence: ['Missing tests/e2e/'],
+            },
+          ],
+          tasks: [
+            {
+              id: 'e2e-foundation',
+              title: 'Create the end-to-end test foundation',
+              reason: 'No E2E suite was found.',
+              instructions: ['Exercise the public application boundary.'],
+              files: ['tests/e2e/'],
+              checkIds: ['e2e'],
+              status: 'pending',
+            },
+          ],
+        },
+        deployment: {
+          enabled: false,
+          target: '',
+          environment: 'staging',
+          workflow: 'deploy.yml',
+          rollbackWorkflow: 'rollback.yml',
+          healthUrl: '',
+          monitorIntervalSeconds: 300,
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+  });
+
+  await page.getByRole('button', { name: 'Repositories' }).click();
+  await expect(page.getByRole('heading', { name: 'Detected service' })).toBeVisible();
+  await expect(page.getByText('review setup', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Review detected setup' }).click();
+  await expect(page.getByRole('heading', { name: 'Review detected project setup' })).toBeVisible();
+  await expect(page.getByText('Codex filled this from the local checkout')).toBeVisible();
+  await expect(page.getByText(/Python environment: uv/)).toBeVisible();
+  await expect(page.getByText('Detected SDLC capabilities')).toBeVisible();
+  await page.getByText('1 bootstrap tasks proposed').click();
+  await expect(page.getByText('Create the end-to-end test foundation')).toBeVisible();
+  await expect(page.getByLabel('GitHub repository')).toHaveValue('e2e-team/detected-service');
+  await page.getByRole('button', { name: 'Save reviewed setup' }).click();
+  await expect(page.getByRole('heading', { name: 'Review detected project setup' })).not.toBeVisible();
+  await expect(page.getByText('review setup', { exact: true })).not.toBeVisible();
+  const confirmedSetup = await page.evaluate(async () => {
+    const repositories = (await (await fetch('/api/repositories')).json()) as {
+      repo: string;
+      setup?: { source: string; status: string; evidence: string[]; confirmedAt: string | null };
+    }[];
+    return repositories.find((repository) => repository.repo === 'detected-service')?.setup;
+  });
+  expect(confirmedSetup).toMatchObject({
+    source: 'detected',
+    status: 'reviewed',
+    evidence: expect.arrayContaining(['Python environment: uv']),
+    confirmedAt: null,
+  });
 });

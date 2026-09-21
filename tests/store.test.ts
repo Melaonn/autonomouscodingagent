@@ -31,10 +31,13 @@ function repo(): Repository {
     requiredCiChecks: [],
     ciWaiver: 'Controlled fixture',
     protectedPaths: [],
+    testEvidence: { requiredForSourceChanges: true, sourcePaths: ['src/**'], testPaths: ['tests/**'] },
+    review: { mode: 'always', minimumRisk: 'low', sensitivePaths: [], maxChangedFiles: 8 },
     version: 1,
     createdAt: new Date().toISOString(),
     deployment: {
       enabled: true,
+      target: 'test staging',
       environment: 'staging',
       workflow: 'deploy.yml',
       rollbackWorkflow: 'rollback.yml',
@@ -96,7 +99,7 @@ describe('durable store', () => {
   it('versions and finds company knowledge', async () => {
     const store = await Store.open();
     stores.push(store);
-    await store.put('document', {
+    await store.putDocument({
       id: 'doc',
       title: 'Tenant security',
       source: 'policy',
@@ -108,5 +111,15 @@ describe('durable store', () => {
     });
     const documents = await store.searchDocuments('add tenant isolation to customer API');
     expect(documents[0]?.id).toBe('doc');
+    expect(documents[0]?.excerpt).toContain('tenant');
+    expect(documents[0]?.excerpt).toContain('isolation');
+  });
+
+  it('removes obsolete credentials during authentication migrations', async () => {
+    const store = await Store.open();
+    stores.push(store);
+    await store.setSecret('old-credential', 'encrypted-value');
+    await store.deleteSecret('old-credential');
+    await expect(store.secret('old-credential')).resolves.toBeUndefined();
   });
 });

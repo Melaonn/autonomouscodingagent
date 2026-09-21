@@ -22,6 +22,8 @@ export default defineConfig({
         DATA_DIR: `.runtime/e2e-${process.pid}`,
         PUBLIC_URL: webUrl,
         GITHUB_TOKEN: '',
+        GITHUB_CLIENT_ID: '',
+        GITHUB_CLIENT_SECRET: '',
       },
     },
     {

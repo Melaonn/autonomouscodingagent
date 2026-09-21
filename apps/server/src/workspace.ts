@@ -3,6 +3,7 @@ import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import spawn from 'cross-spawn';
+import YAML from 'yaml';
 import type { CheckCommand, JobResult, WorkspaceState } from '../../../shared/types.js';
 
 const outputLimit = 256_000;
@@ -116,6 +117,32 @@ async function npmInstallCache(root: string) {
   return { fingerprint, marker };
 }
 
+type NpmLock = { packages?: Record<string, { version?: string; integrity?: string }> };
+
+export function lockfilesMatch(lock: NpmLock, installed: NpmLock) {
+  const expected = Object.entries(lock.packages || {}).filter(([path]) => path.length > 0);
+  const actual = Object.entries(installed.packages || {});
+  if (expected.length !== actual.length) return false;
+  return expected.every(([path, dependency]) => {
+    const candidate = installed.packages?.[path];
+    return candidate?.version === dependency.version && candidate?.integrity === dependency.integrity;
+  });
+}
+
+async function validInstalledNpmTree(root: string) {
+  const [lockText, installedText] = await Promise.all([
+    readFile(resolve(root, 'package-lock.json'), 'utf8').catch(() => ''),
+    readFile(resolve(root, 'node_modules', '.package-lock.json'), 'utf8').catch(() => ''),
+  ]);
+  if (!lockText || !installedText) return false;
+  try {
+    if (!lockfilesMatch(JSON.parse(lockText) as NpmLock, JSON.parse(installedText) as NpmLock)) return false;
+  } catch {
+    return false;
+  }
+  return (await execute('npm', ['ls', '--all', '--json'], root, 120)).exitCode === 0;
+}
+
 async function candidateSources(root: string) {
   const files = (await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']))
     .split('\0')
@@ -221,6 +248,22 @@ export type InspectedWorkspace = WorkspaceState & {
   changedPaths: string[];
 };
 
+export async function listWorkspaceFiles(root: string) {
+  return (await git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']))
+    .split('\0')
+    .filter(Boolean)
+    .map((file) => file.replaceAll('\\', '/'));
+}
+
+export async function inspectDefaultBranch(root: string, fallback: string) {
+  try {
+    const reference = await git(root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    return { branch: reference.replace(/^origin\//, '') || fallback, verified: true };
+  } catch {
+    return { branch: fallback, verified: false };
+  }
+}
+
 export async function inspectWorkspace(path: string): Promise<InspectedWorkspace> {
   const requested = await realpath(path);
   const root = await realpath(await git(requested, ['rev-parse', '--show-toplevel']));
@@ -254,24 +297,75 @@ function reportFile(root: string, path: string) {
   return file;
 }
 
+async function builtinSetupCheck(
+  root: string,
+  action: string,
+  path: string,
+  expectedJob?: string,
+  expectedTrigger?: string,
+): Promise<JobResult> {
+  const started = Date.now();
+  if (!['file', 'github-workflow'].includes(action) || !path)
+    return {
+      exitCode: 127,
+      stdout: '',
+      stderr: 'Unknown SDLC setup validation',
+      durationMs: Date.now() - started,
+      files: {},
+    };
+  const content = await readFile(reportFile(root, path), 'utf8').catch(() => '');
+  let problem = content.trim() ? '' : `Required setup file is missing or empty: ${path}`;
+  if (!problem && action === 'github-workflow') {
+    try {
+      const workflow = YAML.parse(content) as { on?: unknown; jobs?: Record<string, unknown> } | null;
+      const triggers = workflow?.on;
+      const hasTrigger =
+        !expectedTrigger ||
+        triggers === expectedTrigger ||
+        (Array.isArray(triggers) && triggers.includes(expectedTrigger)) ||
+        (typeof triggers === 'object' && triggers !== null && expectedTrigger in triggers);
+      if (!workflow?.jobs || !Object.keys(workflow.jobs).length) problem = `${path} has no workflow jobs`;
+      else if (expectedJob && !workflow.jobs[expectedJob]) problem = `${path} has no ${expectedJob} job`;
+      else if (!hasTrigger) problem = `${path} does not trigger on ${expectedTrigger}`;
+    } catch (error) {
+      problem = `${path} is not valid YAML: ${error instanceof Error ? error.message : 'parse failed'}`;
+    }
+  }
+  return {
+    exitCode: problem ? 1 : 0,
+    stdout: problem ? '' : `Validated setup file: ${path}`,
+    stderr: problem,
+    durationMs: Date.now() - started,
+    files: {},
+  };
+}
+
 export async function executeCheck(root: string, command: CheckCommand): Promise<JobResult> {
   const [executable, ...args] = command.argv;
   if (executable === '@sdlc/security') return builtinSecurityCheck(root, args[0], command.reportPath);
+  if (executable === '@sdlc/setup') return builtinSetupCheck(root, args[0], args[1], args[2], args[3]);
   const installCache =
     command.kind === 'setup' && executable === 'npm' && args.length === 1 && args[0] === 'ci'
       ? await npmInstallCache(root)
       : undefined;
   if (installCache) {
     const stored = await readFile(installCache.marker, 'utf8').catch(() => '');
-    if (stored === installCache.fingerprint)
+    const valid = stored === installCache.fingerprint || (await validInstalledNpmTree(root));
+    if (valid) {
+      if (stored !== installCache.fingerprint) {
+        await mkdir(dirname(installCache.marker), { recursive: true });
+        await writeFile(installCache.marker, installCache.fingerprint, 'utf8');
+      }
       return {
         exitCode: 0,
-        stdout: 'Reused dependency installation; manifests, runtime, platform, and architecture are unchanged.',
+        stdout:
+          'Reused dependency installation after validating lockfile versions, integrity metadata, and the installed tree.',
         stderr: '',
         durationMs: 0,
         files: {},
         cached: true,
       };
+    }
   }
   let reportPath: string | undefined;
   let previousReport: Buffer | undefined;

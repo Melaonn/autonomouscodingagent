@@ -37,7 +37,12 @@ type RunBundle = {
   events: { id: number; time: string; kind: string; message: string; phase: Run['phase'] }[];
   artifacts: { id: string; name: string; hash: string; createdAt: string }[];
 };
-type SetupState = { github: boolean; repositories: number };
+type SetupState = {
+  github: boolean;
+  githubOAuth: boolean;
+  githubLogin: string | null;
+  repositories: number;
+};
 type GitHubRepository = {
   name: string;
   fullName: string;
@@ -149,10 +154,14 @@ function Login({ me }: { me: Me }) {
           One request enters. A governed SDLC leaves requirements, code, tests, review, deployment, and maintenance
           evidence behind.
         </p>
-        {me.githubOAuth && (
+        {me.githubOAuth ? (
           <a className="button primary wide" href="/auth/github">
             <Github size={17} /> Continue with GitHub
           </a>
+        ) : (
+          <div className="notice error">
+            <AlertTriangle /> GitHub sign-in is unavailable on this instance. Contact the application administrator.
+          </div>
         )}
         <p className="fine-print">
           Access is restricted to configured team members. Every approval and policy change is audited.
@@ -922,11 +931,19 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
                 </>
               ) : (
                 <Empty
-                  title={run.status === 'needs_review' ? 'Native review required' : 'Review pending'}
+                  title={
+                    run.status === 'needs_review'
+                      ? 'Native review required'
+                      : run.reviewDecision && !run.reviewDecision.required
+                        ? 'Review not required'
+                        : 'Review pending'
+                  }
                   text={
                     run.status === 'needs_review'
-                      ? 'Type /review in Codex and choose Review uncommitted changes.'
-                      : 'Codex /review begins after automated gates pass.'
+                      ? `Type /review in Codex and choose Review uncommitted changes. ${run.reviewDecision?.reasons.join(' ') || ''}`
+                      : run.reviewDecision && !run.reviewDecision.required
+                        ? 'Repository policy classified this verified change as low risk.'
+                        : 'Review policy is evaluated after automated gates pass.'
                   }
                   compact
                 />
@@ -1171,13 +1188,37 @@ function RepositoriesPage() {
     standards: '',
     requiredCiChecks: 'ci',
     ciWaiver: '',
+    reviewMode: 'risk-based' as 'always' | 'risk-based',
+    minimumRisk: 'medium' as 'low' | 'medium' | 'high',
+    sensitivePaths:
+      '.github/workflows/**, **/migrations/**, **/auth/**, **/security/**, **/billing/**, **/payments/**, **/infra/**',
+    maxChangedFiles: 8,
+    requireChangedTests: true,
+    sourcePaths: 'src/**, app/**, apps/**, lib/**, packages/**/src/**',
+    testPaths: 'test/**, tests/**, **/__tests__/**, **/*.test.*, **/*.spec.*',
     deploymentEnabled: false,
+    deploymentTarget: '',
     healthUrl: '',
     workflow: 'deploy.yml',
     rollbackWorkflow: 'rollback.yml',
     environment: 'staging',
   };
   const [form, setForm] = useState(fresh);
+  const selectedRepository = repos.find(
+    (repository) =>
+      repository.owner.toLowerCase() === form.owner.toLowerCase() &&
+      repository.repo.toLowerCase() === form.repo.toLowerCase(),
+  );
+  const reviewingDetectedSetup = selectedRepository?.setup?.status === 'needs_confirmation';
+  const detectedSetup =
+    selectedRepository?.setup?.source === 'detected' &&
+    !['ready', 'confirmed'].includes(selectedRepository.setup.status)
+      ? selectedRepository.setup
+      : undefined;
+  const selectedFullName = form.owner && form.repo ? `${form.owner}/${form.repo}` : '';
+  const selectedIsAvailable = available.some(
+    (repository) => repository.fullName.toLowerCase() === selectedFullName.toLowerCase(),
+  );
   const load = () =>
     Promise.all([
       api<Repository[]>('/api/repositories'),
@@ -1212,7 +1253,15 @@ function RepositoriesPage() {
       standards: repository.standards,
       requiredCiChecks: repository.requiredCiChecks.join(', '),
       ciWaiver: repository.ciWaiver,
+      reviewMode: repository.review?.mode || 'risk-based',
+      minimumRisk: repository.review?.minimumRisk || 'medium',
+      sensitivePaths: (repository.review?.sensitivePaths || []).join(', '),
+      maxChangedFiles: repository.review?.maxChangedFiles || 8,
+      requireChangedTests: repository.testEvidence?.requiredForSourceChanges ?? true,
+      sourcePaths: (repository.testEvidence?.sourcePaths || []).join(', '),
+      testPaths: (repository.testEvidence?.testPaths || []).join(', '),
       deploymentEnabled: repository.deployment.enabled,
+      deploymentTarget: repository.deployment.target || '',
       healthUrl: repository.deployment.healthUrl,
       workflow: repository.deployment.workflow,
       rollbackWorkflow: repository.deployment.rollbackWorkflow,
@@ -1238,9 +1287,36 @@ function RepositoriesPage() {
             .map((x) => x.trim())
             .filter(Boolean),
           ciWaiver: form.ciWaiver,
+          review: {
+            mode: form.reviewMode,
+            minimumRisk: form.minimumRisk,
+            sensitivePaths: form.sensitivePaths
+              .split(',')
+              .map((path) => path.trim())
+              .filter(Boolean),
+            maxChangedFiles: form.maxChangedFiles,
+          },
+          testEvidence: {
+            requiredForSourceChanges: form.requireChangedTests,
+            sourcePaths: form.sourcePaths
+              .split(',')
+              .map((path) => path.trim())
+              .filter(Boolean),
+            testPaths: form.testPaths
+              .split(',')
+              .map((path) => path.trim())
+              .filter(Boolean),
+          },
           protectedPaths: ['.github/workflows/', '.sdlc/'],
+          setup: selectedRepository?.setup
+            ? {
+                ...selectedRepository.setup,
+                status: reviewingDetectedSetup ? 'reviewed' : selectedRepository.setup.status,
+              }
+            : undefined,
           deployment: {
             enabled: form.deploymentEnabled,
+            target: form.deploymentTarget,
             environment: form.environment,
             workflow: form.workflow,
             rollbackWorkflow: form.rollbackWorkflow,
@@ -1262,7 +1338,7 @@ function RepositoriesPage() {
         <div>
           <p className="eyebrow">POLICY BOUNDARIES</p>
           <h1>Repositories</h1>
-          <p>Choose a connected GitHub project and define its release evidence.</p>
+          <p>Projects opened through Codex appear here with detected commands and policies ready for review.</p>
         </div>
         <button className="button primary" onClick={() => setOpen(true)} disabled={!available.length}>
           <Plus />
@@ -1297,8 +1373,22 @@ function RepositoriesPage() {
         {repos.map((r) => (
           <article className="repo-card" key={r.id}>
             <div>
-              <span className={`stack ${r.stack}`}>{r.stack === 'python' ? 'PY' : 'TS'}</span>
-              <span className="badge monitoring">{r.deployment.enabled ? 'deploy governed' : 'PR only'}</span>
+              <span className={`stack ${r.stack}`}>
+                {r.stack === 'python' ? 'PY' : r.stack === 'typescript' ? 'TS' : 'CUSTOM'}
+              </span>
+              <span
+                className={`badge ${['needs_confirmation', 'reviewed', 'bootstrapping'].includes(r.setup?.status || '') ? 'needs_input' : 'monitoring'}`}
+              >
+                {r.setup?.status === 'needs_confirmation'
+                  ? 'review setup'
+                  : r.setup?.status === 'reviewed'
+                    ? 'start bootstrap'
+                    : r.setup?.status === 'bootstrapping'
+                      ? 'building SDLC'
+                      : r.deployment.enabled
+                        ? 'deploy governed'
+                        : 'PR only'}
+              </span>
             </div>
             <h2>{r.name}</h2>
             <p>
@@ -1306,12 +1396,22 @@ function RepositoriesPage() {
             </p>
             <div className="repo-meta">
               <span>{r.checks.length} quality gates</span>
+              {!!r.setup?.capabilities.length && (
+                <span>
+                  {r.setup.capabilities.filter((item) => ['ready', 'not_applicable'].includes(item.status)).length}/
+                  {r.setup.capabilities.length} SDLC capabilities ready
+                </span>
+              )}
               <span>Policy v{r.version}</span>
               <span>{r.deployment.environment}</span>
             </div>
             <button className="button quiet repo-edit" onClick={() => edit(r)}>
               <Wrench />
-              Edit policy
+              {r.setup?.status === 'needs_confirmation'
+                ? 'Review detected setup'
+                : ['reviewed', 'bootstrapping'].includes(r.setup?.status || '')
+                  ? 'View SDLC bootstrap'
+                  : 'Edit policy'}
             </button>
           </article>
         ))}
@@ -1320,20 +1420,73 @@ function RepositoriesPage() {
         <section className="panel">
           <Empty
             title="No repository selected"
-            text="Choose one of the repositories allowed by the connected GitHub token."
+            text="Choose one of the repositories authorized through the connected GitHub account."
           />
         </section>
       )}
       {open && (
         <Modal
           title={
-            repos.some((r) => r.owner === form.owner && r.repo === form.repo)
-              ? 'Edit repository policy'
+            selectedRepository
+              ? detectedSetup
+                ? 'Review detected project setup'
+                : 'Edit repository policy'
               : 'Add a repository'
           }
           close={() => setOpen(false)}
         >
           <form className="form" onSubmit={save}>
+            {detectedSetup && (
+              <div className="notice warning">
+                <Bot />
+                <div>
+                  <strong>Codex filled this from the local checkout</strong>
+                  <p>
+                    {detectedSetup.status === 'needs_confirmation'
+                      ? 'Confirm the stack, base branch, CI, quality gates, and deployment settings. Saving marks the details as reviewed; Codex starts the bootstrap from chat.'
+                      : detectedSetup.status === 'reviewed'
+                        ? 'The detected details were reviewed. Start or continue the governed prompt in Codex to create the missing foundations.'
+                        : 'Codex is creating the missing foundations. This inventory remains visible until every configured gate passes.'}
+                  </p>
+                  {detectedSetup.evidence.length > 0 && (
+                    <p className="fine-print">Detected: {detectedSetup.evidence.join(' · ')}</p>
+                  )}
+                  {detectedSetup.warnings.length > 0 && (
+                    <p className="fine-print">Check: {detectedSetup.warnings.join(' · ')}</p>
+                  )}
+                </div>
+              </div>
+            )}
+            {detectedSetup && detectedSetup.capabilities.length > 0 && (
+              <section className="setup-inventory">
+                <div>
+                  <h3>Detected SDLC capabilities</h3>
+                  <p className="fine-print">Ready parts are preserved. Codex creates only missing or partial parts.</p>
+                </div>
+                <div className="capability-grid">
+                  {detectedSetup.capabilities.map((item) => (
+                    <article className={`capability ${item.status}`} key={item.id}>
+                      <strong>{item.label}</strong>
+                      <span>{item.status.replace('_', ' ')}</span>
+                      <small>{item.evidence.join(' · ')}</small>
+                    </article>
+                  ))}
+                </div>
+                {detectedSetup.tasks.length > 0 && (
+                  <details>
+                    <summary>{detectedSetup.tasks.length} bootstrap tasks proposed</summary>
+                    <ol className="bootstrap-list">
+                      {detectedSetup.tasks.map((item) => (
+                        <li key={item.id}>
+                          <strong>{item.title}</strong>
+                          <span>{item.reason}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
+              </section>
+            )}
             <label>
               GitHub repository
               <select
@@ -1342,6 +1495,9 @@ function RepositoriesPage() {
                 onChange={(e) => choose(e.target.value)}
               >
                 <option value="">Choose repository…</option>
+                {selectedFullName && !selectedIsAvailable && (
+                  <option value={selectedFullName}>{selectedFullName} · local checkout</option>
+                )}
                 {available.map((repo) => (
                   <option key={repo.fullName} value={repo.fullName}>
                     {repo.fullName}
@@ -1402,11 +1558,77 @@ function RepositoriesPage() {
                 placeholder="Optional rules specific to this repository"
               />
             </label>
+            <h3>Independent review</h3>
+            <div className="two">
+              <label>
+                Review mode
+                <select
+                  value={form.reviewMode}
+                  onChange={(e) => setForm({ ...form, reviewMode: e.target.value as 'always' | 'risk-based' })}
+                >
+                  <option value="risk-based">Risk based</option>
+                  <option value="always">Every change</option>
+                </select>
+              </label>
+              <label>
+                Review from risk level
+                <select
+                  value={form.minimumRisk}
+                  onChange={(e) => setForm({ ...form, minimumRisk: e.target.value as 'low' | 'medium' | 'high' })}
+                  disabled={form.reviewMode === 'always'}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+              <label>
+                Review when changed files exceed
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={form.maxChangedFiles}
+                  onChange={(e) => setForm({ ...form, maxChangedFiles: Number(e.target.value) })}
+                />
+              </label>
+            </div>
+            <label>
+              Sensitive path globs
+              <input
+                value={form.sensitivePaths}
+                onChange={(e) => setForm({ ...form, sensitivePaths: e.target.value })}
+                placeholder="**/auth/**, **/payments/**"
+              />
+            </label>
+            <h3>Acceptance test evidence</h3>
+            <label>
+              Source changes require changed tests
+              <select
+                value={form.requireChangedTests ? 'required' : 'optional'}
+                onChange={(e) => setForm({ ...form, requireChangedTests: e.target.value === 'required' })}
+              >
+                <option value="required">Required</option>
+                <option value="optional">Optional</option>
+              </select>
+            </label>
+            {form.requireChangedTests && (
+              <div className="two">
+                <label>
+                  Source path globs
+                  <input value={form.sourcePaths} onChange={(e) => setForm({ ...form, sourcePaths: e.target.value })} />
+                </label>
+                <label>
+                  Test path globs
+                  <input value={form.testPaths} onChange={(e) => setForm({ ...form, testPaths: e.target.value })} />
+                </label>
+              </div>
+            )}
             <details>
               <summary>Advanced quality gates</summary>
               <p className="fine-print">
-                Recommended TypeScript gates include build, lint, types, unit, isolated browser E2E, secrets, SAST, and
-                dependency audit. Company-specific scanners can be added here.
+                Recommended TypeScript gates include build, lint, types, isolated unit and integration suites, browser
+                E2E, secrets, SAST, and dependency audit. Company-specific scanners can be added here.
               </p>
               {profiles[form.stack] && (
                 <button
@@ -1437,6 +1659,15 @@ function RepositoriesPage() {
             </label>
             {form.deploymentEnabled && (
               <>
+                <label>
+                  Deployment target
+                  <input
+                    required
+                    value={form.deploymentTarget}
+                    onChange={(e) => setForm({ ...form, deploymentTarget: e.target.value })}
+                    placeholder="Azure staging, AWS ECS, Vercel, internal platform…"
+                  />
+                </label>
                 <label>
                   Staging health URL
                   <input
@@ -1471,7 +1702,9 @@ function RepositoriesPage() {
               <button type="button" className="button quiet" onClick={() => setOpen(false)}>
                 Cancel
               </button>
-              <button className="button primary">Save repository</button>
+              <button className="button primary">
+                {reviewingDetectedSetup ? 'Save reviewed setup' : 'Save repository'}
+              </button>
             </div>
           </form>
         </Modal>
@@ -1587,9 +1820,7 @@ function KnowledgePage() {
 }
 function SetupPage({ navigate }: { navigate: (page: string) => void }) {
   const [state, setState] = useState<SetupState | null>(null);
-  const [githubToken, setGithubToken] = useState('');
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState('');
   const load = () =>
     api<SetupState>('/api/setup')
       .then(setState)
@@ -1597,21 +1828,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
   useEffect(() => {
     load();
   }, []);
-  async function connectGithub(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    setBusy('github');
-    try {
-      await api('/api/setup/github', { method: 'POST', body: JSON.stringify({ token: githubToken }) });
-      setGithubToken('');
-      await load();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy('');
-    }
-  }
-  const complete = !!state?.github && !!state?.repositories;
+  const complete = !!state?.github;
   return (
     <>
       <header className="page-head">
@@ -1651,58 +1868,45 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
           </div>
           <SetupStatus label="Connected" />
         </section>
-        <section className={`setup-card ${state?.github ? 'complete' : ''}`}>
+        <section className={`setup-card ${state?.githubLogin ? 'complete' : ''}`}>
           <div className="setup-number">2</div>
           <div className="setup-copy">
             <span className="eyebrow">SOURCE CONTROL</span>
-            <h2>Connect GitHub</h2>
-            <p>
-              Paste a fine-grained token for one controlled repository. It is verified and encrypted before storage.
-            </p>
-            {!state?.github && (
-              <form className="inline-secret" onSubmit={connectGithub}>
-                <input
-                  aria-label="GitHub token"
-                  type="password"
-                  required
-                  minLength={20}
-                  value={githubToken}
-                  onChange={(e) => setGithubToken(e.target.value)}
-                  placeholder="github_pat_…"
-                />
-                <button className="button primary" disabled={busy === 'github'}>
-                  <Github />
-                  Verify and connect
-                </button>
-              </form>
+            <h2>GitHub identity and local Git</h2>
+            {state?.githubLogin ? (
+              <p>
+                Signed in as @{state.githubLogin}. Browser login only verifies your identity. Repository work uses this
+                checkout and your existing local Git credentials
+                {state.github ? ', which are ready for optional PR and CI automation.' : '.'}
+              </p>
+            ) : state?.githubOAuth ? (
+              <>
+                <p>Sign in through GitHub without granting repository, organization, or workflow access.</p>
+                <a className="button primary" href="/auth/github">
+                  <Github /> Continue with GitHub
+                </a>
+              </>
+            ) : (
+              <p>
+                GitHub sign-in has not been enabled by the application administrator. End users never need to create an
+                OAuth application or paste a personal access token.
+              </p>
             )}
-            <a
-              className="help-link"
-              href="https://github.com/settings/personal-access-tokens/new"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Create a GitHub token ↗
-            </a>
           </div>
-          <div>{state?.github && <SetupStatus label="Connected" />}</div>
+          <div>{state?.githubLogin && <SetupStatus label="Signed in" />}</div>
         </section>
-        <section className={`setup-card ${state?.repositories ? 'complete' : ''}`}>
+        <section className="setup-card complete">
           <div className="setup-number">3</div>
           <div className="setup-copy">
             <span className="eyebrow">REPOSITORY POLICY</span>
-            <h2>Choose a repository</h2>
-            <p>Select the project, its quality gates, staging workflow, and health check.</p>
+            <h2>Open your project in Codex</h2>
+            <p>
+              The first governed prompt inventories the repository, asks about uncertain choices, and includes every
+              missing SDLC foundation in the native implementation plan.
+            </p>
           </div>
           <div>
-            {state?.repositories ? (
-              <SetupStatus label="Configured" />
-            ) : (
-              <button className="button primary" onClick={() => navigate('repositories')}>
-                <GitBranch />
-                Add repository
-              </button>
-            )}
+            <SetupStatus label={state?.repositories ? 'Configured' : 'Automatic on first prompt'} />
           </div>
         </section>
       </div>

@@ -18,8 +18,12 @@ if (-not (Test-Path -LiteralPath $environmentFile)) {
     'PUBLIC_URL=http://localhost:4310'
     'COOKIE_SECURE=false'
     "SESSION_SECRET=$(New-Secret)"
+    "LOCAL_MCP_TOKEN=$(New-Secret)"
     'DATA_DIR=.runtime'
-    'GITHUB_TOKEN='
+    'GITHUB_CLIENT_ID='
+    'GITHUB_CLIENT_SECRET='
+    'GITHUB_ALLOWED_USERS='
+    'GITHUB_ADMIN_USERS='
   ) | Set-Content -LiteralPath $environmentFile -Encoding Ascii
 }
 
@@ -50,8 +54,17 @@ Set-EnvironmentValue 'COOKIE_SECURE' 'false'
 Set-EnvironmentValue 'DATA_DIR' '.runtime'
 Remove-EnvironmentValue 'ADMIN_PASSWORD'
 Remove-EnvironmentValue 'DEV_AUTH_TOKEN'
+Remove-EnvironmentValue 'GITHUB_TOKEN'
 if (-not (Select-String -LiteralPath $environmentFile -Pattern '^SESSION_SECRET=.{32,}$' -Quiet)) {
   Set-EnvironmentValue 'SESSION_SECRET' (New-Secret)
+}
+if (-not (Select-String -LiteralPath $environmentFile -Pattern '^LOCAL_MCP_TOKEN=.{32,}$' -Quiet)) {
+  Set-EnvironmentValue 'LOCAL_MCP_TOKEN' (New-Secret)
+}
+foreach ($name in @('GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'GITHUB_ALLOWED_USERS', 'GITHUB_ADMIN_USERS')) {
+  if (-not (Select-String -LiteralPath $environmentFile -Pattern "^$name=" -Quiet)) {
+    Set-EnvironmentValue $name ''
+  }
 }
 
 Push-Location $root

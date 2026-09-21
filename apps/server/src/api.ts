@@ -13,6 +13,7 @@ import {
   repositorySchema,
   reviewSchema,
   runModeSchema,
+  specificationSchema,
   workspaceStateSchema,
   type Document,
   type Integration,
@@ -23,16 +24,9 @@ import {
 import { config } from './config.js';
 import type { Store } from './store.js';
 import type { RunService } from './run-service.js';
-import { hash, nonce, endpoint, equalSecret, sealSecret } from './security.js';
+import { hash, nonce, endpoint, equalSecret } from './security.js';
 import { profiles } from './profiles.js';
-import {
-  availableRepositories,
-  githubConfigured,
-  oauthUrl,
-  oauthUser,
-  setRepositoryToken,
-  validateRepositoryToken,
-} from './github.js';
+import { availableRepositories, githubConfigured, githubOAuthConfigured, oauthUrl, oauthUser } from './github.js';
 import { report } from './gates.js';
 import { inspectIntegration } from './mcp.js';
 declare module 'fastify' {
@@ -46,7 +40,26 @@ const error = (statusCode: number, message: string) => Object.assign(new Error(m
 const roles: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
 export async function buildApi(store: Store, runs: RunService) {
   const app = Fastify({
-    logger: { redact: ['req.headers.authorization', 'req.headers.cookie', 'body.token'] },
+    logger: {
+      redact: ['req.headers.authorization', 'req.headers.cookie'],
+      serializers: {
+        req(value: unknown) {
+          const request = value as {
+            method?: string;
+            url?: string;
+            headers?: { host?: string };
+            socket?: { remoteAddress?: string; remotePort?: number };
+          };
+          return {
+            method: request.method,
+            url: request.url?.startsWith('/auth/github/callback') ? '/auth/github/callback' : request.url,
+            host: request.headers?.host,
+            remoteAddress: request.socket?.remoteAddress,
+            remotePort: request.socket?.remotePort,
+          };
+        },
+      },
+    },
     bodyLimit: 20 * 1024 * 1024,
   });
   await app.register(cookie, { secret: config.sessionSecret });
@@ -64,6 +77,10 @@ export async function buildApi(store: Store, runs: RunService) {
     if (sid) {
       const session = await store.session(sid);
       if (session) {
+        if (session.user.login === 'local-operator' && githubOAuthConfigured()) {
+          await store.deleteSession(sid);
+          return;
+        }
         req.user = session.user;
         req.sessionId = sid;
         req.csrf = session.csrf;
@@ -99,41 +116,73 @@ export async function buildApi(store: Store, runs: RunService) {
     });
     return { user, csrf };
   };
+  const oauthCallback = new URL('/auth/github/callback', config.publicUrl).toString();
+  const localMcpRequest = (req: FastifyRequest) => {
+    const authorization = req.headers.authorization || '';
+    const prefix = 'Bearer ';
+    return (
+      !!config.localMcpToken &&
+      authorization.startsWith(prefix) &&
+      equalSecret(authorization.slice(prefix.length), config.localMcpToken)
+    );
+  };
+  app.get('/healthz', async () => ({ status: 'ok' }));
   app.get('/auth/github', async (_req, reply) => {
+    if (!githubOAuthConfigured()) throw error(503, 'GitHub OAuth is not configured');
     const state = nonce();
     reply.setCookie('oauth_state', state, {
       httpOnly: true,
-      secure: config.production,
+      secure: config.secureCookies,
       sameSite: 'lax',
       path: '/auth',
       maxAge: 600,
     });
-    return reply.redirect(oauthUrl(state));
+    return reply.redirect(oauthUrl(state, oauthCallback));
   });
   app.get('/auth/github/callback', async (req, reply) => {
-    const query = z.object({ code: z.string(), state: z.string() }).parse(req.query);
+    const query = z
+      .object({
+        code: z.string().optional(),
+        state: z.string().optional(),
+        error: z.string().optional(),
+        error_description: z.string().optional(),
+      })
+      .parse(req.query);
+    if (query.error) throw error(400, query.error_description || `GitHub authorization failed: ${query.error}`);
+    if (!query.code || !query.state) throw error(400, 'GitHub authorization response is incomplete');
     if (!req.cookies.oauth_state || !equalSecret(req.cookies.oauth_state, query.state))
       throw error(400, 'OAuth state rejected');
-    const gh = await oauthUser(query.code);
+    const gh = await oauthUser(query.code, oauthCallback);
     const allowed = (process.env.GITHUB_ALLOWED_USERS || '')
       .split(',')
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
-    if (!allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted');
-    const admins = (process.env.GITHUB_ADMIN_USERS || '').split(',').map((x) => x.trim().toLowerCase());
-    await setSession(reply, { login: gh.login, role: admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator' });
+    if (allowed.length && !allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted');
+    const admins = (process.env.GITHUB_ADMIN_USERS || '')
+      .split(',')
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean);
+    await store.audit(gh.login, 'github.oauth.connect', { scopes: gh.scopes });
+    await setSession(reply, {
+      login: gh.login,
+      role: !admins.length || admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator',
+    });
     reply.clearCookie('oauth_state', { path: '/auth' });
     return reply.redirect(config.publicUrl);
   });
   app.get('/api/me', async (req, reply) => {
-    if (!req.user && !config.production && ['127.0.0.1', '::1'].includes(req.ip)) {
+    if (!req.user && localMcpRequest(req)) {
+      const session = await setSession(reply, { login: 'codex-mcp', role: 'admin' });
+      return { ...session, githubOAuth: githubOAuthConfigured() };
+    }
+    if (!req.user && !githubOAuthConfigured() && !config.production && ['127.0.0.1', '::1'].includes(req.ip)) {
       const session = await setSession(reply, { login: 'local-operator', role: 'admin' });
-      return { ...session, githubOAuth: !!process.env.GITHUB_CLIENT_ID };
+      return { ...session, githubOAuth: false };
     }
     return {
       user: req.user || null,
       csrf: req.csrf || '',
-      githubOAuth: !!process.env.GITHUB_CLIENT_ID,
+      githubOAuth: githubOAuthConfigured(),
     };
   });
   app.post('/api/logout', async (req, reply) => {
@@ -145,27 +194,23 @@ export async function buildApi(store: Store, runs: RunService) {
     requireRole(req, 'viewer');
     return {
       execution: 'native Codex app or CLI',
-      github: githubConfigured(),
+      github: await githubConfigured(),
       database: true,
       deploymentRule: 'explicit approval required',
     };
   });
   app.get('/api/setup', async (req) => {
-    requireRole(req, 'admin');
-    return { github: githubConfigured(), repositories: (await store.repositories()).length };
-  });
-  app.post('/api/setup/github', async (req) => {
     const actor = requireRole(req, 'admin');
-    const { token } = z.object({ token: z.string().min(20).max(500) }).parse(req.body);
-    const login = await validateRepositoryToken(token);
-    await store.setSecret('github-token', sealSecret(token, config.sessionSecret));
-    setRepositoryToken(token);
-    await store.audit(actor.login, 'setup.github.connect', { login });
-    return { connected: true, login };
+    return {
+      github: await githubConfigured(),
+      githubOAuth: githubOAuthConfigured(),
+      githubLogin: actor.login === 'codex-mcp' || actor.login === 'local-operator' ? null : actor.login,
+      repositories: (await store.repositories()).length,
+    };
   });
   app.get('/api/github/repositories', async (req) => {
     requireRole(req, 'admin');
-    if (!githubConfigured()) throw error(409, 'Connect GitHub first');
+    if (!(await githubConfigured())) throw error(409, 'Authenticate Git locally before browsing remote repositories');
     return availableRepositories();
   });
   app.get('/api/profiles', async (req) => {
@@ -181,12 +226,21 @@ export async function buildApi(store: Store, runs: RunService) {
     const input = repositorySchema.parse(req.body);
     if (input.deployment.enabled) {
       endpoint(input.deployment.healthUrl, !config.production);
+      if (!input.deployment.target.trim()) throw error(400, 'Deployment target is required');
       if (!input.deployment.workflow || !input.deployment.rollbackWorkflow)
         throw error(400, 'Deployment and rollback workflows are required');
+      if (
+        ![input.deployment.workflow, input.deployment.rollbackWorkflow].every((name) => /^[\w.-]+\.ya?ml$/.test(name))
+      )
+        throw error(400, 'Deployment workflow names must be YAML filenames without directories');
     }
     if (!input.requiredCiChecks.length && !input.ciWaiver.trim())
       throw error(400, 'Configure required CI checks or a documented CI waiver');
-    const existing = (await store.repositories()).find((r) => r.owner === input.owner && r.repo === input.repo);
+    const existing = (await store.repositories()).find(
+      (repository) =>
+        repository.owner.toLowerCase() === input.owner.toLowerCase() &&
+        repository.repo.toLowerCase() === input.repo.toLowerCase(),
+    );
     const repository = {
       ...input,
       id: existing?.id || randomUUID(),
@@ -223,7 +277,7 @@ export async function buildApi(store: Store, runs: RunService) {
       hash: hash(body.content),
       createdAt: new Date().toISOString(),
     };
-    await store.put('document', doc);
+    await store.putDocument(doc);
     await store.audit(actor.login, 'document.save', { id: doc.id, version: doc.version, hash: doc.hash });
     return { ...doc, content: undefined };
   });
@@ -241,7 +295,10 @@ export async function buildApi(store: Store, runs: RunService) {
         allowedTools: z.array(z.string()),
         enabled: z.boolean(),
         headersEnv: z.record(z.string(), z.string()),
-        contextCalls: z.array(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) })).default([]),
+        contextCalls: z
+          .array(z.object({ tool: z.string(), arguments: z.record(z.string(), z.unknown()) }))
+          .max(10)
+          .default([]),
       })
       .parse(req.body);
     for (const call of body.contextCalls)
@@ -295,6 +352,11 @@ export async function buildApi(store: Store, runs: RunService) {
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
     return runs.saveDesign(id, designSchema.parse(req.body), actor.login);
   });
+  app.post('/api/runs/:id/specification', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    return runs.saveSpecification(id, specificationSchema.parse(req.body), actor.login);
+  });
   app.post('/api/runs/:id/progress', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
@@ -318,9 +380,10 @@ export async function buildApi(store: Store, runs: RunService) {
       .object({
         candidateDigest: z.string().regex(/^[0-9a-f]{40}$/),
         results: z.array(z.object({ commandId: z.string(), result: resultSchema })).max(20),
+        changedPaths: z.array(z.string().min(1).max(500)).max(500).default([]),
       })
       .parse(req.body);
-    return runs.verify(id, body.candidateDigest, body.results, actor.login);
+    return runs.verify(id, body.candidateDigest, body.results, body.changedPaths, actor.login);
   });
   app.post('/api/runs/:id/review', async (req) => {
     const actor = requireRole(req, 'operator');

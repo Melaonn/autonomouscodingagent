@@ -49,12 +49,119 @@ export type CheckCommand = z.infer<typeof commandSchema>;
 
 export const deploymentSchema = z.object({
   enabled: z.boolean().default(false),
+  target: z.string().max(200).default(''),
   environment: z.string().default('staging'),
   workflow: z.string().default('deploy.yml'),
   rollbackWorkflow: z.string().default('rollback.yml'),
   healthUrl: z.string().default(''),
   monitorIntervalSeconds: z.number().int().min(60).default(300),
 });
+
+export const setupCapabilitySchema = z.object({
+  id: z.enum([
+    'dependencies',
+    'build',
+    'lint',
+    'typecheck',
+    'unit',
+    'integration',
+    'e2e',
+    'security',
+    'ci',
+    'deployment',
+  ]),
+  label: z.string().min(1).max(120),
+  status: z.enum(['ready', 'partial', 'missing', 'needs_input', 'not_applicable']),
+  required: z.boolean().default(true),
+  evidence: z.array(z.string().min(1).max(500)).max(20).default([]),
+});
+
+export const setupTaskSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9_-]*$/),
+  title: z.string().min(1).max(200),
+  reason: z.string().min(1).max(500),
+  instructions: z.array(z.string().min(1).max(500)).min(1).max(12),
+  files: z.array(z.string().min(1).max(300)).max(30).default([]),
+  checkIds: z.array(z.string().min(1).max(100)).max(20).default([]),
+  status: z.enum(['pending', 'verified']).default('pending'),
+});
+
+export const reviewPolicySchema = z
+  .object({
+    mode: z.enum(['always', 'risk-based']).default('risk-based'),
+    minimumRisk: z.enum(['low', 'medium', 'high']).default('medium'),
+    sensitivePaths: z
+      .array(z.string().min(1).max(300))
+      .max(100)
+      .default([
+        '.github/workflows/**',
+        '**/migrations/**',
+        '**/auth/**',
+        '**/security/**',
+        '**/billing/**',
+        '**/payments/**',
+        '**/infra/**',
+      ]),
+    maxChangedFiles: z.number().int().min(1).max(100).default(8),
+  })
+  .default({
+    mode: 'risk-based',
+    minimumRisk: 'medium',
+    sensitivePaths: [
+      '.github/workflows/**',
+      '**/migrations/**',
+      '**/auth/**',
+      '**/security/**',
+      '**/billing/**',
+      '**/payments/**',
+      '**/infra/**',
+    ],
+    maxChangedFiles: 8,
+  });
+
+export const testEvidencePolicySchema = z
+  .object({
+    requiredForSourceChanges: z.boolean().default(true),
+    sourcePaths: z
+      .array(z.string().min(1).max(300))
+      .min(1)
+      .max(100)
+      .default(['src/**', 'app/**', 'apps/**', 'lib/**', 'packages/**/src/**']),
+    testPaths: z
+      .array(z.string().min(1).max(300))
+      .min(1)
+      .max(100)
+      .default(['test/**', 'tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*']),
+  })
+  .default({
+    requiredForSourceChanges: true,
+    sourcePaths: ['src/**', 'app/**', 'apps/**', 'lib/**', 'packages/**/src/**'],
+    testPaths: ['test/**', 'tests/**', '**/__tests__/**', '**/*.test.*', '**/*.spec.*'],
+  });
+
+export const repositorySetupSchema = z
+  .object({
+    source: z.enum(['manual', 'detected']).default('manual'),
+    status: z.enum(['needs_confirmation', 'reviewed', 'bootstrapping', 'ready', 'confirmed']).default('confirmed'),
+    confidence: z.enum(['high', 'medium', 'low']).default('high'),
+    detectedAt: z.string().datetime().nullable().default(null),
+    confirmedAt: z.string().datetime().nullable().default(null),
+    evidence: z.array(z.string().min(1).max(500)).max(50).default([]),
+    warnings: z.array(z.string().min(1).max(500)).max(50).default([]),
+    capabilities: z.array(setupCapabilitySchema).max(20).default([]),
+    tasks: z.array(setupTaskSchema).max(30).default([]),
+  })
+  .default({
+    source: 'manual',
+    status: 'confirmed',
+    confidence: 'high',
+    detectedAt: null,
+    confirmedAt: null,
+    evidence: [],
+    warnings: [],
+    capabilities: [],
+    tasks: [],
+  });
 
 export const repositorySchema = z
   .object({
@@ -63,13 +170,17 @@ export const repositorySchema = z
     repo: z.string().regex(/^[\w.-]+$/),
     branch: z.string().min(1).default('main'),
     stack: z.enum(['typescript', 'python', 'custom']),
-    standards: z.string().max(60000).default(''),
+    standards: z.string().max(8000).default(''),
     checks: z.array(commandSchema).min(1).max(20),
     requiredCiChecks: z.array(z.string()).default([]),
     ciWaiver: z.string().default(''),
     protectedPaths: z.array(z.string()).default(['.github/workflows/', '.sdlc/']),
+    setup: repositorySetupSchema,
+    review: reviewPolicySchema,
+    testEvidence: testEvidencePolicySchema,
     deployment: deploymentSchema.default({
       enabled: false,
+      target: '',
       environment: 'staging',
       workflow: 'deploy.yml',
       rollbackWorkflow: 'rollback.yml',
@@ -82,15 +193,19 @@ export const repositorySchema = z
     path: ['checks'],
   });
 export type RepositoryConfig = z.infer<typeof repositorySchema>;
-export interface Repository extends RepositoryConfig {
+export interface Repository extends Omit<RepositoryConfig, 'setup'> {
   id: string;
   version: number;
   createdAt: string;
+  setup?: RepositoryConfig['setup'];
 }
 
 export const criterionSchema = z.object({
   id: z.string().min(1),
   description: z.string().min(1),
+  sourceQuote: z.string().trim().min(3).max(500).optional(),
+  requirement: z.string().trim().min(1).max(500).optional(),
+  testEvidence: z.string().trim().min(1).max(500).optional(),
   evidence: z.enum(['test', 'review', 'human']),
   checkIds: z.array(z.string()),
   category: z.enum(['functional', 'security', 'performance', 'reliability', 'usability']),
@@ -133,6 +248,20 @@ export const designSchema = z.object({
 });
 export type Design = z.infer<typeof designSchema>;
 
+export const changeRiskSchema = z.object({
+  level: z.enum(['low', 'medium', 'high']),
+  rationale: z.string().min(1).max(2_000),
+});
+export type ChangeRisk = z.infer<typeof changeRiskSchema>;
+
+export const specificationSchema = z.object({
+  plan: planSchema,
+  requirements: contractSchema,
+  design: designSchema,
+  risk: changeRiskSchema,
+});
+export type Specification = z.infer<typeof specificationSchema>;
+
 export const findingSchema = z.object({
   id: z.string(),
   severity: z.enum(['critical', 'high', 'medium', 'low']),
@@ -148,6 +277,19 @@ export const reviewSchema = z.object({
   summary: z.string().min(1),
   findings: z.array(findingSchema),
   criteria: z.array(z.object({ id: z.string(), satisfied: z.boolean(), evidence: z.string() })),
+  requestCoverage: z
+    .array(
+      z.object({
+        sourceQuote: z.string().trim().min(3).max(500),
+        requirement: z.string().trim().min(1).max(500),
+        status: z.enum(['satisfied', 'missing', 'unverified']),
+        evidence: z.string().trim().min(1).max(2_000),
+        file: z.string().max(500),
+        line: z.number().int().nonnegative(),
+      }),
+    )
+    .min(1)
+    .max(30),
 });
 export type Review = z.infer<typeof reviewSchema>;
 
@@ -227,8 +369,10 @@ export interface Run {
   contract?: TaskContract;
   plan?: Plan;
   design?: Design;
+  risk?: ChangeRisk;
   gates: GateResult[];
   review?: Review;
+  reviewDecision?: { required: boolean; reasons: string[] };
   question?: string;
   answer?: string;
   blocker?: string;
