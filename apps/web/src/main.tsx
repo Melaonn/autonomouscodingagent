@@ -164,7 +164,7 @@ function Login({ me }: { me: Me }) {
           </div>
         )}
         <p className="fine-print">
-          Access is restricted to configured team members. Every approval and policy change is audited.
+          Sign in with your GitHub identity. Every approval and policy change is audited.
         </p>
       </section>
       <div className="login-grid" aria-hidden="true" />
