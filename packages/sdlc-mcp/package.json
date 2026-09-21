@@ -1,18 +1,18 @@
 {
   "name": "@melson/sdlc-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local Codex connector for the SDLC Control Plane",
   "type": "module",
   "bin": {
-    "sdlc-mcp": "dist/cli.js"
+    "sdlc-mcp": "dist/cli.cjs"
   },
   "files": [
-    "dist",
+    "dist/cli.cjs",
     "instructions.md",
     "README.md"
   ],
   "scripts": {
-    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --outfile=dist/cli.js",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/cli.ts --bundle --platform=node --format=cjs --outfile=dist/cli.cjs",
     "prepack": "npm run build"
   },
   "engines": {

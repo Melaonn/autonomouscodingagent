@@ -3,15 +3,15 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import spawn from 'cross-spawn';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 import { ChatClient } from '../../../apps/server/src/chat-client.js';
 import { createChatServer } from '../../../apps/server/src/chat-mcp.js';
 
 const DEFAULT_SERVER = 'https://sdlc-control-plane.onrender.com';
-const PACKAGE_SPEC = '@melson/sdlc-mcp@0.1.1';
+const PACKAGE_SPEC = '@melson/sdlc-mcp@0.1.2';
 const START_MARKER = '<!-- sdlc-chat-integration -->';
 const END_MARKER = '<!-- /sdlc-chat-integration -->';
+const moduleDirectory = dirname(resolve(process.argv[1]));
 
 type Credentials = { serverUrl: string; accessToken: string; login: string; connectedAt: string };
 type PairingStart = {
@@ -81,7 +81,7 @@ async function loadCredentials() {
 async function installInstructions() {
   const codexHome = process.env.CODEX_HOME || join(homedir(), '.codex');
   const target = join(codexHome, 'AGENTS.md');
-  const source = fileURLToPath(new URL('../instructions.md', import.meta.url));
+  const source = join(moduleDirectory, '..', 'instructions.md');
   const instructions = (await readFile(source, 'utf8')).trim();
   let existing = await readFile(target, 'utf8').catch(() => '');
   const start = existing.indexOf(START_MARKER);
