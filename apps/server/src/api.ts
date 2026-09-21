@@ -1,7 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import staticPlugin from '@fastify/static';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
@@ -24,7 +24,7 @@ import {
 import { config } from './config.js';
 import type { Store } from './store.js';
 import type { RunService } from './run-service.js';
-import { hash, nonce, endpoint, equalSecret } from './security.js';
+import { hash, nonce, endpoint, equalSecret, openSecret, sealSecret } from './security.js';
 import { profiles } from './profiles.js';
 import { availableRepositories, githubConfigured, githubOAuthConfigured, oauthUrl, oauthUser } from './github.js';
 import { report } from './gates.js';
@@ -36,8 +36,20 @@ declare module 'fastify' {
     csrf?: string;
   }
 }
+type PairingRecord = {
+  id: string;
+  userCode: string;
+  clientName: string;
+  status: 'pending' | 'approved';
+  createdAt: string;
+  expiresAt: string;
+  user?: User;
+  sealedToken?: string;
+};
+type McpCredential = { id: string; user: User; clientName: string; createdAt: string };
 const error = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
 const roles: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
+const userCodeSchema = z.string().regex(/^[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/);
 export async function buildApi(store: Store, runs: RunService) {
   const app = Fastify({
     logger: {
@@ -89,6 +101,7 @@ export async function buildApi(store: Store, runs: RunService) {
   });
   app.addHook('preHandler', async (req) => {
     if (!req.url.startsWith('/api/') || req.method === 'GET' || req.method === 'HEAD') return;
+    if (['/api/pairing/start', '/api/pairing/poll'].includes(req.url.split('?')[0])) return;
     if (!req.user) throw error(401, 'Sign in required');
     if (req.headers['x-csrf-token'] !== req.csrf) throw error(403, 'CSRF token missing or invalid');
     const origin = req.headers.origin;
@@ -126,9 +139,19 @@ export async function buildApi(store: Store, runs: RunService) {
       equalSecret(authorization.slice(prefix.length), config.localMcpToken)
     );
   };
+  const pairedMcpUser = async (req: FastifyRequest) => {
+    const authorization = req.headers.authorization || '';
+    if (!authorization.startsWith('Bearer ')) return undefined;
+    const token = authorization.slice('Bearer '.length);
+    if (!token.startsWith('sdlc_') || token.length < 40) return undefined;
+    return (await store.get<McpCredential>('mcp-credential', hash(token)))?.user;
+  };
+  const pairingByUserCode = async (userCode: string) =>
+    (await store.list<PairingRecord>('mcp-pairing')).find((pairing) => pairing.userCode === userCode);
   app.get('/healthz', async () => ({ status: 'ok' }));
-  app.get('/auth/github', async (_req, reply) => {
+  app.get('/auth/github', async (req, reply) => {
     if (!githubOAuthConfigured()) throw error(503, 'GitHub OAuth is not configured');
+    const query = z.object({ pair: userCodeSchema.optional() }).parse(req.query);
     const state = nonce();
     reply.setCookie('oauth_state', state, {
       httpOnly: true,
@@ -137,6 +160,14 @@ export async function buildApi(store: Store, runs: RunService) {
       path: '/auth',
       maxAge: 600,
     });
+    if (query.pair)
+      reply.setCookie('oauth_pair', query.pair, {
+        httpOnly: true,
+        secure: config.secureCookies,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 600,
+      });
     return reply.redirect(oauthUrl(state, oauthCallback));
   });
   app.get('/auth/github/callback', async (req, reply) => {
@@ -169,11 +200,95 @@ export async function buildApi(store: Store, runs: RunService) {
       role: !admins.length || admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator',
     });
     reply.clearCookie('oauth_state', { path: '/auth' });
-    return reply.redirect(config.publicUrl);
+    const pair = userCodeSchema.safeParse(req.cookies.oauth_pair);
+    reply.clearCookie('oauth_pair', { path: '/' });
+    return reply.redirect(pair.success ? `${config.publicUrl}/?pair=${pair.data}` : config.publicUrl);
+  });
+  app.post('/api/pairing/start', async (req, reply) => {
+    const body = z.object({ clientName: z.string().trim().min(1).max(80).default('Codex') }).parse(req.body || {});
+    const deviceCode = nonce();
+    const createdAt = new Date();
+    const existing = await store.list<PairingRecord>('mcp-pairing');
+    for (const pairing of existing)
+      if (Date.parse(pairing.expiresAt) <= createdAt.getTime()) await store.delete('mcp-pairing', pairing.id);
+    const activeCodes = new Set(
+      existing
+        .filter((pairing) => Date.parse(pairing.expiresAt) > createdAt.getTime())
+        .map((pairing) => pairing.userCode),
+    );
+    let userCode = '';
+    do userCode = randomBytes(6).toString('hex').toUpperCase().match(/.{4}/g)!.join('-');
+    while (activeCodes.has(userCode));
+    const pairing: PairingRecord = {
+      id: hash(deviceCode),
+      userCode,
+      clientName: body.clientName,
+      status: 'pending',
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(createdAt.getTime() + 10 * 60_000).toISOString(),
+    };
+    await store.put('mcp-pairing', pairing);
+    reply.status(201);
+    return {
+      deviceCode,
+      userCode,
+      verificationUri: `${config.publicUrl}/?pair=${userCode}`,
+      expiresIn: 600,
+      interval: 2,
+    };
+  });
+  app.post('/api/pairing/poll', async (req) => {
+    const body = z.object({ deviceCode: z.string().length(64) }).parse(req.body);
+    const id = hash(body.deviceCode);
+    const pairing = await store.get<PairingRecord>('mcp-pairing', id);
+    if (!pairing) throw error(404, 'Pairing request not found');
+    if (Date.parse(pairing.expiresAt) <= Date.now()) {
+      await store.delete('mcp-pairing', id);
+      throw error(410, 'Pairing request expired');
+    }
+    if (pairing.status === 'pending') return { status: 'pending' };
+    if (!pairing.sealedToken || !pairing.user) throw error(409, 'Pairing approval is incomplete');
+    return {
+      status: 'approved',
+      accessToken: openSecret(pairing.sealedToken, config.sessionSecret),
+      user: pairing.user,
+    };
+  });
+  app.post('/api/pairing/approve', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const body = z.object({ userCode: userCodeSchema }).parse(req.body);
+    const pairing = await pairingByUserCode(body.userCode);
+    if (!pairing) throw error(404, 'Pairing request not found');
+    if (Date.parse(pairing.expiresAt) <= Date.now()) {
+      await store.delete('mcp-pairing', pairing.id);
+      throw error(410, 'Pairing request expired');
+    }
+    if (pairing.status === 'approved') throw error(409, 'Pairing request was already approved');
+    const accessToken = `sdlc_${nonce()}`;
+    const credential: McpCredential = {
+      id: hash(accessToken),
+      user: actor,
+      clientName: pairing.clientName,
+      createdAt: new Date().toISOString(),
+    };
+    await store.put('mcp-credential', credential);
+    await store.put('mcp-pairing', {
+      ...pairing,
+      status: 'approved',
+      user: actor,
+      sealedToken: sealSecret(accessToken, config.sessionSecret),
+    });
+    await store.audit(actor.login, 'mcp.device.pair', { clientName: pairing.clientName });
+    return { connected: true, login: actor.login, clientName: pairing.clientName };
   });
   app.get('/api/me', async (req, reply) => {
-    if (!req.user && localMcpRequest(req)) {
-      const session = await setSession(reply, { login: 'codex-mcp', role: 'admin' });
+    const mcpUser = !req.user
+      ? localMcpRequest(req)
+        ? { login: 'codex-mcp', role: 'admin' as const }
+        : await pairedMcpUser(req)
+      : undefined;
+    if (mcpUser) {
+      const session = await setSession(reply, mcpUser);
       return { ...session, githubOAuth: githubOAuthConfigured() };
     }
     if (!req.user && !githubOAuthConfigured() && !config.production && ['127.0.0.1', '::1'].includes(req.ip)) {
@@ -224,7 +339,7 @@ export async function buildApi(store: Store, runs: RunService) {
     return store.repositories();
   });
   app.post('/api/repositories', async (req) => {
-    const actor = requireRole(req, 'admin');
+    const actor = requireRole(req, 'operator');
     const input = repositorySchema.parse(req.body);
     if (input.deployment.enabled) {
       endpoint(input.deployment.healthUrl, !config.production);

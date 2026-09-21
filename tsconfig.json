@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["apps/server/src", "shared", "tests", "vitest.config.ts", "playwright.config.ts"]
+  "include": ["apps/server/src", "packages/sdlc-mcp/src", "shared", "tests", "vitest.config.ts", "playwright.config.ts"]
 }

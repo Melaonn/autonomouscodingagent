@@ -144,7 +144,7 @@ function runGuidance(run: Run) {
   const [label, detail] = guidance[run.phase];
   return { label, detail, action: false };
 }
-function Login({ me }: { me: Me }) {
+function Login({ me, pairCode }: { me: Me; pairCode?: string }) {
   return (
     <main className="login-shell">
       <section className="login-card">
@@ -162,7 +162,10 @@ function Login({ me }: { me: Me }) {
           evidence behind.
         </p>
         {me.githubOAuth ? (
-          <a className="button primary wide" href="/auth/github">
+          <a
+            className="button primary wide"
+            href={`/auth/github${pairCode ? `?pair=${encodeURIComponent(pairCode)}` : ''}`}
+          >
             <Github size={17} /> Continue with GitHub
           </a>
         ) : (
@@ -171,6 +174,53 @@ function Login({ me }: { me: Me }) {
           </div>
         )}
         <p className="fine-print">Sign in with your GitHub identity. Every approval and policy change is audited.</p>
+      </section>
+      <div className="login-grid" aria-hidden="true" />
+    </main>
+  );
+}
+function PairingPage({ code, login }: { code: string; login: string }) {
+  const [status, setStatus] = useState<'ready' | 'connecting' | 'connected'>('ready');
+  const [error, setError] = useState('');
+  async function approve() {
+    setStatus('connecting');
+    setError('');
+    try {
+      await api('/api/pairing/approve', { method: 'POST', body: JSON.stringify({ userCode: code }) });
+      setStatus('connected');
+    } catch (cause) {
+      setStatus('ready');
+      setError((cause as Error).message);
+    }
+  }
+  return (
+    <main className="login-shell">
+      <section className="login-card">
+        <div className="brand-mark">
+          <GitBranch />
+        </div>
+        <p className="eyebrow">CODEX DEVICE PAIRING</p>
+        <h1>{status === 'connected' ? 'Codex is connected.' : 'Connect this Codex device'}</h1>
+        {status === 'connected' ? (
+          <>
+            <p className="login-copy">Return to the terminal. The installer will finish automatically.</p>
+            <div className="notice">
+              <CheckCircle2 /> Connected as @{login}
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="login-copy">
+              Approve code <code>{code}</code> for @{login}. This gives the local MCP access to governed SDLC actions;
+              it does not grant GitHub repository permission.
+            </p>
+            {error && <div className="notice error">{error}</div>}
+            <button className="button primary wide" onClick={approve} disabled={status === 'connecting'}>
+              {status === 'connecting' ? <LoaderCircle className="spin" /> : <Check />}
+              {status === 'connecting' ? 'Connecting…' : 'Connect Codex'}
+            </button>
+          </>
+        )}
       </section>
       <div className="login-grid" aria-hidden="true" />
     </main>
@@ -1898,8 +1948,8 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
             <span className="eyebrow">CODING AGENT</span>
             <h2>Use your Codex app or CLI</h2>
             <p>
-              Run <code>.\connect-codex.ps1</code> once. It updates your Codex configuration without changing the
-              project. There is no second Codex login, clone, or Docker worker.
+              Run <code>npx -y @melaonn/sdlc-mcp install</code> once. Approve the short-lived GitHub pairing code, then
+              restart Codex. There is no harness clone, shared token, <code>.env</code> file, or Docker worker.
             </p>
             <p>
               Start feature work in native Plan mode so Codex can ask its normal questions. After you choose to
@@ -2209,13 +2259,15 @@ function App() {
   useEffect(() => {
     loadMe();
   }, []);
+  const pairingCode = new URLSearchParams(window.location.search).get('pair') || undefined;
   if (!me)
     return (
       <div className="loading">
         <LoaderCircle className="spin" />
       </div>
     );
-  if (!me.user) return <Login me={me} />;
+  if (!me.user) return <Login me={me} pairCode={pairingCode} />;
+  if (pairingCode) return <PairingPage code={pairingCode} login={me.user.login} />;
   async function logout() {
     await api('/api/logout', { method: 'POST' });
     csrf = '';

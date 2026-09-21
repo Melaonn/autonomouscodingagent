@@ -25,6 +25,58 @@ describe('dashboard authentication', () => {
     }
   });
 
+  it('pairs a local Codex device without sharing the installation administrator token', async () => {
+    vi.stubEnv('GITHUB_CLIENT_ID', '');
+    vi.stubEnv('GITHUB_CLIENT_SECRET', '');
+    const store = await Store.open();
+    const app = await buildApi(store, new RunService(store));
+
+    try {
+      const started = await app.inject({
+        method: 'POST',
+        url: '/api/pairing/start',
+        payload: { clientName: 'Codex test device' },
+      });
+      expect(started.statusCode).toBe(201);
+      const pairing = started.json<{ deviceCode: string; userCode: string; verificationUri: string }>();
+      expect(pairing.deviceCode).toHaveLength(64);
+      expect(pairing.userCode).toMatch(/^[A-F0-9]{4}(?:-[A-F0-9]{4}){2}$/);
+      expect(pairing.verificationUri).toContain(`pair=${pairing.userCode}`);
+
+      const browser = await app.inject({ method: 'GET', url: '/api/me' });
+      const browserSession = browser.cookies.find((cookie) => cookie.name === 'sdlc_session');
+      const csrf = browser.json<{ csrf: string }>().csrf;
+      const approved = await app.inject({
+        method: 'POST',
+        url: '/api/pairing/approve',
+        cookies: { sdlc_session: browserSession!.value },
+        headers: { 'x-csrf-token': csrf },
+        payload: { userCode: pairing.userCode },
+      });
+      expect(approved.statusCode).toBe(200);
+
+      const polled = await app.inject({
+        method: 'POST',
+        url: '/api/pairing/poll',
+        payload: { deviceCode: pairing.deviceCode },
+      });
+      const credential = polled.json<{ status: string; accessToken: string }>();
+      expect(credential.status).toBe('approved');
+      expect(credential.accessToken).toMatch(/^sdlc_[a-f0-9]{64}$/);
+
+      const mcp = await app.inject({
+        method: 'GET',
+        url: '/api/me',
+        headers: { authorization: `Bearer ${credential.accessToken}` },
+      });
+      expect(mcp.json()).toMatchObject({ user: { login: 'local-operator', role: 'admin' } });
+      expect(mcp.cookies.some((cookie) => cookie.name === 'sdlc_session')).toBe(true);
+    } finally {
+      await app.close();
+      await store.close();
+    }
+  });
+
   it('replaces an existing local browser session when OAuth becomes available', async () => {
     vi.stubEnv('GITHUB_CLIENT_ID', '');
     vi.stubEnv('GITHUB_CLIENT_SECRET', '');
@@ -78,21 +130,27 @@ describe('dashboard authentication', () => {
       const anonymous = await app.inject({ method: 'GET', url: '/api/me' });
       expect(anonymous.json()).toMatchObject({ user: null, githubOAuth: true });
 
-      const authorization = await app.inject({ method: 'GET', url: '/auth/github' });
+      const authorization = await app.inject({
+        method: 'GET',
+        url: '/auth/github?pair=ABCD-EF12-3456',
+      });
       expect(authorization.statusCode).toBe(302);
       const location = new URL(authorization.headers.location!);
       const state = location.searchParams.get('state');
       expect(state).toBeTruthy();
       expect(location.searchParams.has('scope')).toBe(false);
       const stateCookie = authorization.cookies.find((cookie) => cookie.name === 'oauth_state');
+      const pairCookie = authorization.cookies.find((cookie) => cookie.name === 'oauth_pair');
       expect(stateCookie).toBeTruthy();
+      expect(pairCookie).toBeTruthy();
 
       const callback = await app.inject({
         method: 'GET',
         url: `/auth/github/callback?code=temporary-code&state=${encodeURIComponent(state!)}`,
-        cookies: { oauth_state: stateCookie!.value },
+        cookies: { oauth_state: stateCookie!.value, oauth_pair: pairCookie!.value },
       });
       expect(callback.statusCode).toBe(302);
+      expect(callback.headers.location).toContain('/?pair=ABCD-EF12-3456');
       const session = callback.cookies.find((cookie) => cookie.name === 'sdlc_session');
       expect(session).toBeTruthy();
 

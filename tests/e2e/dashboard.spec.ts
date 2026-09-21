@@ -19,7 +19,8 @@ test('local operator reaches native Codex and GitHub onboarding', async ({ page 
   await expect(page.getByRole('heading', { name: 'Connect and start' })).toBeVisible();
   await expect(page.getByText('Connected', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Use your Codex app or CLI' })).toBeVisible();
-  await expect(page.getByText('There is no second Codex login')).toBeVisible();
+  await expect(page.getByText('npx -y @melaonn/sdlc-mcp install')).toBeVisible();
+  await expect(page.getByText('There is no harness clone')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'GitHub identity and local Git' })).toBeVisible();
   await expect(page.getByText('End users never need to create an OAuth application')).toBeVisible();
   await expect(page.getByRole('link', { name: 'Create GitHub OAuth App' })).toHaveCount(0);
@@ -33,6 +34,20 @@ test('local operator reaches native Codex and GitHub onboarding', async ({ page 
   await page.getByRole('button', { name: 'Preconfigure policy' }).click();
   await expect(page.getByLabel('GitHub owner')).toBeVisible();
   await expect(page.getByLabel('Repository name')).toBeVisible();
+});
+
+test('a signed-in user can approve a Codex pairing code', async ({ page, request }) => {
+  const started = await request.post('/api/pairing/start', {
+    data: { clientName: 'Playwright Codex' },
+  });
+  expect(started.status()).toBe(201);
+  const pairing = (await started.json()) as { userCode: string };
+
+  await page.goto(`/?pair=${encodeURIComponent(pairing.userCode)}`);
+  await expect(page.getByRole('heading', { name: 'Connect this Codex device' })).toBeVisible();
+  await expect(page.getByText(pairing.userCode, { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Connect Codex' }).click();
+  await expect(page.getByRole('heading', { name: 'Codex is connected.' })).toBeVisible();
 });
 
 test('run detail explains the work in the seven SDLC phases without overflow', async ({ page }) => {

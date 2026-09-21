@@ -1,0 +1,25 @@
+{
+  "name": "@melaonn/sdlc-mcp",
+  "version": "0.1.0",
+  "description": "Local Codex connector for the SDLC Control Plane",
+  "type": "module",
+  "bin": {
+    "sdlc-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "instructions.md",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --outfile=dist/cli.js",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "UNLICENSED"
+}
