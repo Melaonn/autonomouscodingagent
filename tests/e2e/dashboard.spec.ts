@@ -30,7 +30,7 @@ test('local operator reaches native Codex and GitHub onboarding', async ({ page 
   await page.getByRole('button', { name: 'Repositories' }).click();
   await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
   await expect(page.getByText('Open your project in Codex')).toBeVisible();
-  await page.getByRole('button', { name: 'Add repository' }).click();
+  await page.getByRole('button', { name: 'Preconfigure policy' }).click();
   await expect(page.getByLabel('GitHub owner')).toBeVisible();
   await expect(page.getByLabel('Repository name')).toBeVisible();
 });

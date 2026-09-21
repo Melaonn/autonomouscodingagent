@@ -1347,7 +1347,7 @@ function RepositoriesPage({ canManage }: { canManage: boolean }) {
         </div>
         <button className="button primary" onClick={() => setOpen(true)} disabled={!canManage}>
           <Plus />
-          Add repository
+          Preconfigure policy
         </button>
       </header>
       {error && (
@@ -1371,8 +1371,8 @@ function RepositoriesPage({ canManage }: { canManage: boolean }) {
           <div>
             <strong>Open your project in Codex</strong>
             <p>
-              The first governed prompt detects and registers the local checkout automatically. Administrators can also
-              add its owner and repository name manually.
+              The first governed prompt detects and registers the local checkout automatically. The manual policy form
+              is only an administrator fallback for configuration before that first prompt.
             </p>
           </div>
         </div>
@@ -1439,7 +1439,7 @@ function RepositoriesPage({ canManage }: { canManage: boolean }) {
               ? detectedSetup
                 ? 'Review detected project setup'
                 : 'Edit repository policy'
-              : 'Add a repository'
+              : 'Preconfigure repository policy'
           }
           close={() => setOpen(false)}
         >
@@ -1497,7 +1497,7 @@ function RepositoriesPage({ canManage }: { canManage: boolean }) {
             )}
             {available.length > 0 && (
               <label>
-                Repository available to the server
+                Repository available through the server GitHub App
                 <select value={selectedIsAvailable ? selectedFullName : ''} onChange={(e) => choose(e.target.value)}>
                   <option value="">Enter a local checkout below…</option>
                   {available.map((repo) => (
@@ -1512,7 +1512,7 @@ function RepositoriesPage({ canManage }: { canManage: boolean }) {
             <div className="notice">
               <GitBranch />
               <div>
-                <strong>Local checkout details</strong>
+                <strong>Repository identity</strong>
                 <p>
                   These identify the project. Git operations still use the credentials already configured on your
                   computer.
@@ -1744,7 +1744,7 @@ function RepositoriesPage({ canManage }: { canManage: boolean }) {
                 Cancel
               </button>
               <button className="button primary">
-                {reviewingDetectedSetup ? 'Save reviewed setup' : 'Save repository'}
+                {reviewingDetectedSetup ? 'Save reviewed setup' : 'Save policy'}
               </button>
             </div>
           </form>
