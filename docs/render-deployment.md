@@ -17,7 +17,7 @@ The repository includes a Render Blueprint that creates one free Node web servic
 5. Connect any Codex installation to the hosted control plane:
 
    ```powershell
-   npx -y @melaonn/sdlc-mcp install --server https://<render-hostname>
+   npx -y @melson/sdlc-mcp install --server https://<render-hostname>
    ```
 
 The local MCP process still inspects and edits the developer's local checkout and executes local quality gates. Render hosts only the dashboard, lifecycle state, company context, and remote delivery coordination.

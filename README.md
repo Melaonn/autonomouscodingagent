@@ -11,7 +11,7 @@ There is no Docker worker, second Codex login, repository clone, or hidden codin
 Requirements: Node.js 20+, Git, the Codex desktop app or CLI, and a GitHub account.
 
 ```powershell
-npx -y @melaonn/sdlc-mcp install
+npx -y @melson/sdlc-mcp install
 ```
 
 The command opens a short-lived pairing page. Sign in with GitHub, verify the displayed code, and select **Connect Codex**. The installer stores a device-specific credential locally, adds the `sdlc` MCP server to Codex, and installs the workflow instructions. Restart Codex, open an existing Git checkout, enter Plan mode, and give the normal feature or bug-fix prompt. No harness clone, `.env` file, personal access token, or shared administrator credential is required.

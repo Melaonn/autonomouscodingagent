@@ -9,7 +9,7 @@ import { ChatClient } from '../../../apps/server/src/chat-client.js';
 import { createChatServer } from '../../../apps/server/src/chat-mcp.js';
 
 const DEFAULT_SERVER = 'https://sdlc-control-plane.onrender.com';
-const PACKAGE_SPEC = '@melaonn/sdlc-mcp@0.1.0';
+const PACKAGE_SPEC = '@melson/sdlc-mcp@0.1.0';
 const START_MARKER = '<!-- sdlc-chat-integration -->';
 const END_MARKER = '<!-- /sdlc-chat-integration -->';
 
@@ -149,7 +149,7 @@ async function main() {
   const [command = 'help', ...args] = process.argv.slice(2);
   if (command === 'install') return install(args);
   if (command === 'run') return run();
-  process.stdout.write('Usage:\n  npx -y @melaonn/sdlc-mcp install [--server https://example.com]\n  sdlc-mcp run\n');
+  process.stdout.write('Usage:\n  npx -y @melson/sdlc-mcp install [--server https://example.com]\n  sdlc-mcp run\n');
 }
 
 main().catch((cause) => {

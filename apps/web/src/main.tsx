@@ -1948,7 +1948,7 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
             <span className="eyebrow">CODING AGENT</span>
             <h2>Use your Codex app or CLI</h2>
             <p>
-              Run <code>npx -y @melaonn/sdlc-mcp install</code> once. Approve the short-lived GitHub pairing code, then
+              Run <code>npx -y @melson/sdlc-mcp install</code> once. Approve the short-lived GitHub pairing code, then
               restart Codex. There is no harness clone, shared token, <code>.env</code> file, or Docker worker.
             </p>
             <p>

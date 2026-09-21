@@ -73,6 +73,6 @@ describe('one-command MCP installer', () => {
     expect(await readFile(join(codexHome, 'AGENTS.md'), 'utf8')).toContain('Governed SDLC workflow');
     const commands = await readFile(commandLog, 'utf8');
     expect(commands).toContain('"mcp" "remove" "sdlc"');
-    expect(commands).toContain('"mcp" "add" "sdlc" "--" "npx.cmd" "-y" "@melaonn/sdlc-mcp@0.1.0" "run"');
+    expect(commands).toContain('"mcp" "add" "sdlc" "--" "npx.cmd" "-y" "@melson/sdlc-mcp@0.1.0" "run"');
   });
 });

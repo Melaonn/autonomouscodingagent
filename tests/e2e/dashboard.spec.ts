@@ -19,7 +19,7 @@ test('local operator reaches native Codex and GitHub onboarding', async ({ page 
   await expect(page.getByRole('heading', { name: 'Connect and start' })).toBeVisible();
   await expect(page.getByText('Connected', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Use your Codex app or CLI' })).toBeVisible();
-  await expect(page.getByText('npx -y @melaonn/sdlc-mcp install')).toBeVisible();
+  await expect(page.getByText('npx -y @melson/sdlc-mcp install')).toBeVisible();
   await expect(page.getByText('There is no harness clone')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'GitHub identity and local Git' })).toBeVisible();
   await expect(page.getByText('End users never need to create an OAuth application')).toBeVisible();
