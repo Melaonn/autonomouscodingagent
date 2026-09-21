@@ -1,7 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
 import staticPlugin from '@fastify/static';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
@@ -24,7 +24,7 @@ import {
 import { config } from './config.js';
 import type { Store } from './store.js';
 import type { RunService } from './run-service.js';
-import { hash, nonce, endpoint, equalSecret } from './security.js';
+import { hash, nonce, endpoint, equalSecret, openSecret, sealSecret } from './security.js';
 import { profiles } from './profiles.js';
 import { availableRepositories, githubConfigured, githubOAuthConfigured, oauthUrl, oauthUser } from './github.js';
 import { report } from './gates.js';
@@ -36,8 +36,20 @@ declare module 'fastify' {
     csrf?: string;
   }
 }
+type PairingRecord = {
+  id: string;
+  userCode: string;
+  clientName: string;
+  status: 'pending' | 'approved';
+  createdAt: string;
+  expiresAt: string;
+  user?: User;
+  sealedToken?: string;
+};
+type McpCredential = { id: string; user: User; clientName: string; createdAt: string };
 const error = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
 const roles: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 };
+const userCodeSchema = z.string().regex(/^[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/);
 export async function buildApi(store: Store, runs: RunService) {
   const app = Fastify({
     logger: {
@@ -89,6 +101,7 @@ export async function buildApi(store: Store, runs: RunService) {
   });
   app.addHook('preHandler', async (req) => {
     if (!req.url.startsWith('/api/') || req.method === 'GET' || req.method === 'HEAD') return;
+    if (['/api/pairing/start', '/api/pairing/poll'].includes(req.url.split('?')[0])) return;
     if (!req.user) throw error(401, 'Sign in required');
     if (req.headers['x-csrf-token'] !== req.csrf) throw error(403, 'CSRF token missing or invalid');
     const origin = req.headers.origin;
@@ -102,6 +115,19 @@ export async function buildApi(store: Store, runs: RunService) {
     if (!req.user) throw error(401, 'Sign in required');
     if (roles[req.user.role] < roles[role]) throw error(403, `${role} role required`);
     return req.user;
+  };
+  const tenantId = (user: User) => user.login.trim().toLowerCase();
+  const tenantVisible = (user: User, record: { tenantId?: string }) =>
+    record.tenantId === tenantId(user) || (!record.tenantId && user.role === 'admin');
+  const requireTenantRun = async (user: User, id: string) => {
+    const run = await store.getRun(id);
+    if (!run || !tenantVisible(user, run)) throw error(404, 'Run not found');
+    return run;
+  };
+  const requireTenantRepository = async (user: User, id: string) => {
+    const repository = await store.get<Repository>('repository', id);
+    if (!repository || !tenantVisible(user, repository)) throw error(404, 'Repository not found');
+    return repository;
   };
   const setSession = async (reply: FastifyReply, user: User) => {
     const id = nonce();
@@ -126,9 +152,19 @@ export async function buildApi(store: Store, runs: RunService) {
       equalSecret(authorization.slice(prefix.length), config.localMcpToken)
     );
   };
+  const pairedMcpUser = async (req: FastifyRequest) => {
+    const authorization = req.headers.authorization || '';
+    if (!authorization.startsWith('Bearer ')) return undefined;
+    const token = authorization.slice('Bearer '.length);
+    if (!token.startsWith('sdlc_') || token.length < 40) return undefined;
+    return (await store.get<McpCredential>('mcp-credential', hash(token)))?.user;
+  };
+  const pairingByUserCode = async (userCode: string) =>
+    (await store.list<PairingRecord>('mcp-pairing')).find((pairing) => pairing.userCode === userCode);
   app.get('/healthz', async () => ({ status: 'ok' }));
-  app.get('/auth/github', async (_req, reply) => {
+  app.get('/auth/github', async (req, reply) => {
     if (!githubOAuthConfigured()) throw error(503, 'GitHub OAuth is not configured');
+    const query = z.object({ pair: userCodeSchema.optional() }).parse(req.query);
     const state = nonce();
     reply.setCookie('oauth_state', state, {
       httpOnly: true,
@@ -137,6 +173,14 @@ export async function buildApi(store: Store, runs: RunService) {
       path: '/auth',
       maxAge: 600,
     });
+    if (query.pair)
+      reply.setCookie('oauth_pair', query.pair, {
+        httpOnly: true,
+        secure: config.secureCookies,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 600,
+      });
     return reply.redirect(oauthUrl(state, oauthCallback));
   });
   app.get('/auth/github/callback', async (req, reply) => {
@@ -157,7 +201,8 @@ export async function buildApi(store: Store, runs: RunService) {
       .split(',')
       .map((x) => x.trim().toLowerCase())
       .filter(Boolean);
-    if (allowed.length && !allowed.includes(gh.login.toLowerCase())) throw error(403, 'GitHub user is not allowlisted');
+    if (allowed.length && !allowed.includes('*') && !allowed.includes(gh.login.toLowerCase()))
+      throw error(403, 'GitHub user is not allowlisted');
     const admins = (process.env.GITHUB_ADMIN_USERS || '')
       .split(',')
       .map((x) => x.trim().toLowerCase())
@@ -168,11 +213,95 @@ export async function buildApi(store: Store, runs: RunService) {
       role: !admins.length || admins.includes(gh.login.toLowerCase()) ? 'admin' : 'operator',
     });
     reply.clearCookie('oauth_state', { path: '/auth' });
-    return reply.redirect(config.publicUrl);
+    const pair = userCodeSchema.safeParse(req.cookies.oauth_pair);
+    reply.clearCookie('oauth_pair', { path: '/' });
+    return reply.redirect(pair.success ? `${config.publicUrl}/?pair=${pair.data}` : config.publicUrl);
+  });
+  app.post('/api/pairing/start', async (req, reply) => {
+    const body = z.object({ clientName: z.string().trim().min(1).max(80).default('Codex') }).parse(req.body || {});
+    const deviceCode = nonce();
+    const createdAt = new Date();
+    const existing = await store.list<PairingRecord>('mcp-pairing');
+    for (const pairing of existing)
+      if (Date.parse(pairing.expiresAt) <= createdAt.getTime()) await store.delete('mcp-pairing', pairing.id);
+    const activeCodes = new Set(
+      existing
+        .filter((pairing) => Date.parse(pairing.expiresAt) > createdAt.getTime())
+        .map((pairing) => pairing.userCode),
+    );
+    let userCode = '';
+    do userCode = randomBytes(6).toString('hex').toUpperCase().match(/.{4}/g)!.join('-');
+    while (activeCodes.has(userCode));
+    const pairing: PairingRecord = {
+      id: hash(deviceCode),
+      userCode,
+      clientName: body.clientName,
+      status: 'pending',
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(createdAt.getTime() + 10 * 60_000).toISOString(),
+    };
+    await store.put('mcp-pairing', pairing);
+    reply.status(201);
+    return {
+      deviceCode,
+      userCode,
+      verificationUri: `${config.publicUrl}/?pair=${userCode}`,
+      expiresIn: 600,
+      interval: 2,
+    };
+  });
+  app.post('/api/pairing/poll', async (req) => {
+    const body = z.object({ deviceCode: z.string().length(64) }).parse(req.body);
+    const id = hash(body.deviceCode);
+    const pairing = await store.get<PairingRecord>('mcp-pairing', id);
+    if (!pairing) throw error(404, 'Pairing request not found');
+    if (Date.parse(pairing.expiresAt) <= Date.now()) {
+      await store.delete('mcp-pairing', id);
+      throw error(410, 'Pairing request expired');
+    }
+    if (pairing.status === 'pending') return { status: 'pending' };
+    if (!pairing.sealedToken || !pairing.user) throw error(409, 'Pairing approval is incomplete');
+    return {
+      status: 'approved',
+      accessToken: openSecret(pairing.sealedToken, config.sessionSecret),
+      user: pairing.user,
+    };
+  });
+  app.post('/api/pairing/approve', async (req) => {
+    const actor = requireRole(req, 'operator');
+    const body = z.object({ userCode: userCodeSchema }).parse(req.body);
+    const pairing = await pairingByUserCode(body.userCode);
+    if (!pairing) throw error(404, 'Pairing request not found');
+    if (Date.parse(pairing.expiresAt) <= Date.now()) {
+      await store.delete('mcp-pairing', pairing.id);
+      throw error(410, 'Pairing request expired');
+    }
+    if (pairing.status === 'approved') throw error(409, 'Pairing request was already approved');
+    const accessToken = `sdlc_${nonce()}`;
+    const credential: McpCredential = {
+      id: hash(accessToken),
+      user: actor,
+      clientName: pairing.clientName,
+      createdAt: new Date().toISOString(),
+    };
+    await store.put('mcp-credential', credential);
+    await store.put('mcp-pairing', {
+      ...pairing,
+      status: 'approved',
+      user: actor,
+      sealedToken: sealSecret(accessToken, config.sessionSecret),
+    });
+    await store.audit(actor.login, 'mcp.device.pair', { clientName: pairing.clientName });
+    return { connected: true, login: actor.login, clientName: pairing.clientName };
   });
   app.get('/api/me', async (req, reply) => {
-    if (!req.user && localMcpRequest(req)) {
-      const session = await setSession(reply, { login: 'codex-mcp', role: 'admin' });
+    const mcpUser = !req.user
+      ? localMcpRequest(req)
+        ? { login: 'codex-mcp', role: 'admin' as const }
+        : await pairedMcpUser(req)
+      : undefined;
+    if (mcpUser) {
+      const session = await setSession(reply, mcpUser);
       return { ...session, githubOAuth: githubOAuthConfigured() };
     }
     if (!req.user && !githubOAuthConfigured() && !config.production && ['127.0.0.1', '::1'].includes(req.ip)) {
@@ -194,9 +323,10 @@ export async function buildApi(store: Store, runs: RunService) {
     requireRole(req, 'viewer');
     return {
       execution: 'native Codex app or CLI',
-      github: await githubConfigured(),
+      githubIdentity: githubOAuthConfigured(),
+      repositoryAccess: (await githubConfigured()) ? 'server API and local Git' : 'developer local Git',
       database: true,
-      deploymentRule: 'explicit approval required',
+      deploymentApproval: 'required',
     };
   });
   app.get('/api/setup', async (req) => {
@@ -205,7 +335,7 @@ export async function buildApi(store: Store, runs: RunService) {
       github: await githubConfigured(),
       githubOAuth: githubOAuthConfigured(),
       githubLogin: actor.login === 'codex-mcp' || actor.login === 'local-operator' ? null : actor.login,
-      repositories: (await store.repositories()).length,
+      repositories: (await store.repositories()).filter((repository) => tenantVisible(actor, repository)).length,
     };
   });
   app.get('/api/github/repositories', async (req) => {
@@ -218,11 +348,11 @@ export async function buildApi(store: Store, runs: RunService) {
     return profiles;
   });
   app.get('/api/repositories', async (req) => {
-    requireRole(req, 'viewer');
-    return store.repositories();
+    const actor = requireRole(req, 'viewer');
+    return (await store.repositories()).filter((repository) => tenantVisible(actor, repository));
   });
   app.post('/api/repositories', async (req) => {
-    const actor = requireRole(req, 'admin');
+    const actor = requireRole(req, 'operator');
     const input = repositorySchema.parse(req.body);
     if (input.deployment.enabled) {
       endpoint(input.deployment.healthUrl, !config.production);
@@ -238,12 +368,14 @@ export async function buildApi(store: Store, runs: RunService) {
       throw error(400, 'Configure required CI checks or a documented CI waiver');
     const existing = (await store.repositories()).find(
       (repository) =>
+        tenantVisible(actor, repository) &&
         repository.owner.toLowerCase() === input.owner.toLowerCase() &&
         repository.repo.toLowerCase() === input.repo.toLowerCase(),
     );
     const repository = {
       ...input,
       id: existing?.id || randomUUID(),
+      tenantId: tenantId(actor),
       version: (existing?.version || 0) + 1,
       createdAt: new Date().toISOString(),
     };
@@ -314,13 +446,14 @@ export async function buildApi(store: Store, runs: RunService) {
     return { integration, tools };
   });
   app.get('/api/runs', async (req) => {
-    requireRole(req, 'viewer');
-    return (await store.runs()).map((r) => ({ ...r, policy: { ...r.policy, standards: '' } }));
+    const actor = requireRole(req, 'viewer');
+    return (await store.runs())
+      .filter((run) => tenantVisible(actor, run))
+      .map((run) => ({ ...run, policy: { ...run.policy, standards: '' } }));
   });
   app.get('/api/runs/:id', async (req) => {
-    requireRole(req, 'viewer');
-    const run = await store.getRun(z.object({ id: z.string().uuid() }).parse(req.params).id);
-    if (!run) throw error(404, 'Run not found');
+    const actor = requireRole(req, 'viewer');
+    const run = await requireTenantRun(actor, z.object({ id: z.string().uuid() }).parse(req.params).id);
     return { run, events: await store.events(run.id), artifacts: await store.artifacts(run.id) };
   });
   app.post('/api/runs', async (req) => {
@@ -333,33 +466,37 @@ export async function buildApi(store: Store, runs: RunService) {
         workspace: workspaceStateSchema,
       })
       .parse(req.body);
-    const repository = await store.get<Repository>('repository', body.repositoryId);
-    if (!repository) throw error(404, 'Repository not found');
+    const repository = await requireTenantRepository(actor, body.repositoryId);
     return runs.create(repository, body.prompt, body.workspace, body.mode, actor.login);
   });
   app.post('/api/runs/:id/plan', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.savePlan(id, planSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/requirements', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveRequirements(id, contractSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/design', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveDesign(id, designSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/specification', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveSpecification(id, specificationSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/progress', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z
       .object({ phase: z.enum(phases), step: z.string().min(1).max(100), message: z.string().min(1).max(2000) })
       .parse(req.body);
@@ -368,6 +505,7 @@ export async function buildApi(store: Store, runs: RunService) {
   app.post('/api/runs/:id/verify', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const resultSchema = z.object({
       exitCode: z.number().int(),
       stdout: z.string().max(300000),
@@ -388,11 +526,13 @@ export async function buildApi(store: Store, runs: RunService) {
   app.post('/api/runs/:id/review', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveReview(id, reviewSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/publish', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z
       .object({
         candidateDigest: z.string().regex(/^[0-9a-f]{40}$/),
@@ -405,43 +545,48 @@ export async function buildApi(store: Store, runs: RunService) {
   app.post('/api/runs/:id/sync', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.sync(id, actor.login);
   });
   app.post('/api/runs/:id/answer', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z.object({ answer: z.string().min(1).max(10000) }).parse(req.body);
     return runs.answer(id, body.answer, actor.login);
   });
   app.post('/api/runs/:id/approval', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z.object({ approved: z.boolean(), digest: z.string() }).parse(req.body);
     return runs.approve(id, body.approved, body.digest, actor.login);
   });
   app.post('/api/runs/:id/cancel', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.cancel(id, actor.login);
   });
   app.post('/api/runs/:id/resume', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.resume(id, actor.login);
   });
   app.get('/api/runs/:id/report', async (req, reply) => {
-    requireRole(req, 'viewer');
+    const actor = requireRole(req, 'viewer');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
-    const run = await store.getRun(id);
-    if (!run) throw error(404, 'Run not found');
+    const run = await requireTenantRun(actor, id);
     reply.type('text/markdown').header('content-disposition', `attachment; filename="sdlc-${id}.md"`);
     return report(run);
   });
   app.get('/api/artifacts/:id', async (req, reply) => {
-    requireRole(req, 'viewer');
+    const actor = requireRole(req, 'viewer');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
-    const artifact = await store.get<{ name: string; content: string }>('artifact', id);
+    const artifact = await store.get<{ runId: string; name: string; content: string }>('artifact', id);
     if (!artifact) throw error(404, 'Artifact not found');
+    await requireTenantRun(actor, artifact.runId);
     reply
       .type(artifact.name.endsWith('.json') ? 'application/json' : 'text/plain')
       .header('content-disposition', `attachment; filename="${artifact.name.replace(/[^\w.-]/g, '_')}"`);

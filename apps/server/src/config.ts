@@ -24,8 +24,6 @@ export function validateConfig() {
     throw new Error('Production requires GitHub OAuth');
   if (config.production && (!process.env.GITHUB_ALLOWED_USERS || !process.env.GITHUB_ADMIN_USERS))
     throw new Error('Production requires GitHub user and administrator allowlists');
-  if (config.production && config.localMcpToken.length < 32)
-    throw new Error('Production requires LOCAL_MCP_TOKEN with at least 32 characters');
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length < 32)
     throw new Error('SESSION_SECRET must have at least 32 characters');
   if (config.localMcpToken && config.localMcpToken.length < 32)

@@ -1,4 +1,4 @@
-/** Local-only API adapter. Session cookies never enter tool results. */
+/** API adapter for the local Codex process. Session cookies never enter tool results. */
 export class ChatClient {
   private cookie = '';
   private csrf = '';
@@ -8,16 +8,17 @@ export class ChatClient {
 
   constructor(url: string, localToken = process.env.SDLC_CHAT_TOKEN || '') {
     const parsed = new URL(url);
+    const loopback = parsed.protocol === 'http:' && ['127.0.0.1', '[::1]'].includes(parsed.hostname);
+    const remoteTls = parsed.protocol === 'https:';
     if (
-      parsed.protocol !== 'http:' ||
-      !['127.0.0.1', '[::1]'].includes(parsed.hostname) ||
+      (!loopback && !remoteTls) ||
       parsed.username ||
       parsed.password ||
       parsed.pathname !== '/' ||
       parsed.search ||
       parsed.hash
     ) {
-      throw new Error('SDLC chat requires a loopback HTTP URL, such as http://127.0.0.1:4310');
+      throw new Error('SDLC chat requires HTTPS for a remote server or loopback HTTP for local development.');
     }
     this.url = parsed.origin;
     this.localToken = localToken;

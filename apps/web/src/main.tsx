@@ -50,6 +50,13 @@ type GitHubRepository = {
   defaultBranch: string;
   language: string | null;
 };
+type Readiness = {
+  execution: string;
+  githubIdentity: boolean;
+  repositoryAccess: string;
+  database: boolean;
+  deploymentApproval: string;
+};
 let csrf = '';
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -137,7 +144,7 @@ function runGuidance(run: Run) {
   const [label, detail] = guidance[run.phase];
   return { label, detail, action: false };
 }
-function Login({ me }: { me: Me }) {
+function Login({ me, pairCode }: { me: Me; pairCode?: string }) {
   return (
     <main className="login-shell">
       <section className="login-card">
@@ -155,7 +162,10 @@ function Login({ me }: { me: Me }) {
           evidence behind.
         </p>
         {me.githubOAuth ? (
-          <a className="button primary wide" href="/auth/github">
+          <a
+            className="button primary wide"
+            href={`/auth/github${pairCode ? `?pair=${encodeURIComponent(pairCode)}` : ''}`}
+          >
             <Github size={17} /> Continue with GitHub
           </a>
         ) : (
@@ -163,9 +173,54 @@ function Login({ me }: { me: Me }) {
             <AlertTriangle /> GitHub sign-in is unavailable on this instance. Contact the application administrator.
           </div>
         )}
-        <p className="fine-print">
-          Access is restricted to configured team members. Every approval and policy change is audited.
-        </p>
+        <p className="fine-print">Sign in with your GitHub identity. Every approval and policy change is audited.</p>
+      </section>
+      <div className="login-grid" aria-hidden="true" />
+    </main>
+  );
+}
+function PairingPage({ code, login }: { code: string; login: string }) {
+  const [status, setStatus] = useState<'ready' | 'connecting' | 'connected'>('ready');
+  const [error, setError] = useState('');
+  async function approve() {
+    setStatus('connecting');
+    setError('');
+    try {
+      await api('/api/pairing/approve', { method: 'POST', body: JSON.stringify({ userCode: code }) });
+      setStatus('connected');
+    } catch (cause) {
+      setStatus('ready');
+      setError((cause as Error).message);
+    }
+  }
+  return (
+    <main className="login-shell">
+      <section className="login-card">
+        <div className="brand-mark">
+          <GitBranch />
+        </div>
+        <p className="eyebrow">CODEX DEVICE PAIRING</p>
+        <h1>{status === 'connected' ? 'Codex is connected.' : 'Connect this Codex device'}</h1>
+        {status === 'connected' ? (
+          <>
+            <p className="login-copy">Return to the terminal. The installer will finish automatically.</p>
+            <div className="notice">
+              <CheckCircle2 /> Connected as @{login}
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="login-copy">
+              Approve code <code>{code}</code> for @{login}. This gives the local MCP access to governed SDLC actions;
+              it does not grant GitHub repository permission.
+            </p>
+            {error && <div className="notice error">{error}</div>}
+            <button className="button primary wide" onClick={approve} disabled={status === 'connecting'}>
+              {status === 'connecting' ? <LoaderCircle className="spin" /> : <Check />}
+              {status === 'connecting' ? 'Connecting…' : 'Connect Codex'}
+            </button>
+          </>
+        )}
       </section>
       <div className="login-grid" aria-hidden="true" />
     </main>
@@ -1171,7 +1226,7 @@ function GateIcon({ status }: { status: string }) {
     <LoaderCircle className="spin" />
   );
 }
-function RepositoriesPage() {
+function RepositoriesPage({ canManage }: { canManage: boolean }) {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [profiles, setProfiles] = useState<Record<string, Repository['checks']>>({});
   const [available, setAvailable] = useState<GitHubRepository[]>([]);
@@ -1275,7 +1330,7 @@ function RepositoriesPage() {
       await api('/api/repositories', {
         method: 'POST',
         body: JSON.stringify({
-          name: form.name,
+          name: form.name.trim() || form.repo.trim(),
           owner: form.owner,
           repo: form.repo,
           branch: form.branch,
@@ -1340,9 +1395,9 @@ function RepositoriesPage() {
           <h1>Repositories</h1>
           <p>Projects opened through Codex appear here with detected commands and policies ready for review.</p>
         </div>
-        <button className="button primary" onClick={() => setOpen(true)} disabled={!available.length}>
+        <button className="button primary" onClick={() => setOpen(true)} disabled={!canManage}>
           <Plus />
-          Add repository
+          Preconfigure policy
         </button>
       </header>
       {error && (
@@ -1356,7 +1411,7 @@ function RepositoriesPage() {
           <LoaderCircle className="spin" />
           <div>
             <strong>Loading repositories</strong>
-            <p>Reading saved policies and repositories allowed by GitHub.</p>
+            <p>Reading saved policies and optional server-side GitHub access.</p>
           </div>
         </div>
       )}
@@ -1364,8 +1419,11 @@ function RepositoriesPage() {
         <div className="notice warning">
           <Github />
           <div>
-            <strong>Connect GitHub first</strong>
-            <p>The setup page will verify your token and load its allowed repositories here.</p>
+            <strong>Open your project in Codex</strong>
+            <p>
+              The first governed prompt detects and registers the local checkout automatically. The manual policy form
+              is only an administrator fallback for configuration before that first prompt.
+            </p>
           </div>
         </div>
       )}
@@ -1420,7 +1478,7 @@ function RepositoriesPage() {
         <section className="panel">
           <Empty
             title="No repository selected"
-            text="Choose one of the repositories authorized through the connected GitHub account."
+            text="Choose a repository available to the server, or let Codex register your local checkout automatically."
           />
         </section>
       )}
@@ -1431,7 +1489,7 @@ function RepositoriesPage() {
               ? detectedSetup
                 ? 'Review detected project setup'
                 : 'Edit repository policy'
-              : 'Add a repository'
+              : 'Preconfigure repository policy'
           }
           close={() => setOpen(false)}
         >
@@ -1487,24 +1545,57 @@ function RepositoriesPage() {
                 )}
               </section>
             )}
+            {available.length > 0 && (
+              <label>
+                Repository available through the server GitHub App
+                <select value={selectedIsAvailable ? selectedFullName : ''} onChange={(e) => choose(e.target.value)}>
+                  <option value="">Enter a local checkout below…</option>
+                  {available.map((repo) => (
+                    <option key={repo.fullName} value={repo.fullName}>
+                      {repo.fullName}
+                      {repo.private ? ' · private' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="notice">
+              <GitBranch />
+              <div>
+                <strong>Repository identity</strong>
+                <p>
+                  These identify the project. Git operations still use the credentials already configured on your
+                  computer.
+                </p>
+              </div>
+            </div>
+            <div className="two">
+              <label>
+                GitHub owner
+                <input
+                  required
+                  value={form.owner}
+                  onChange={(e) => setForm({ ...form, owner: e.target.value.trim() })}
+                  placeholder="organization-or-user"
+                />
+              </label>
+              <label>
+                Repository name
+                <input
+                  required
+                  value={form.repo}
+                  onChange={(e) => setForm({ ...form, repo: e.target.value.trim() })}
+                  placeholder="project-name"
+                />
+              </label>
+            </div>
             <label>
-              GitHub repository
-              <select
-                required
-                value={form.owner && form.repo ? `${form.owner}/${form.repo}` : ''}
-                onChange={(e) => choose(e.target.value)}
-              >
-                <option value="">Choose repository…</option>
-                {selectedFullName && !selectedIsAvailable && (
-                  <option value={selectedFullName}>{selectedFullName} · local checkout</option>
-                )}
-                {available.map((repo) => (
-                  <option key={repo.fullName} value={repo.fullName}>
-                    {repo.fullName}
-                    {repo.private ? ' · private' : ''}
-                  </option>
-                ))}
-              </select>
+              Display name
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder={form.repo || 'Defaults to the repository name'}
+              />
             </label>
             <div className="two">
               <label>
@@ -1703,7 +1794,7 @@ function RepositoriesPage() {
                 Cancel
               </button>
               <button className="button primary">
-                {reviewingDetectedSetup ? 'Save reviewed setup' : 'Save repository'}
+                {reviewingDetectedSetup ? 'Save reviewed setup' : 'Save policy'}
               </button>
             </div>
           </form>
@@ -1857,8 +1948,8 @@ function SetupPage({ navigate }: { navigate: (page: string) => void }) {
             <span className="eyebrow">CODING AGENT</span>
             <h2>Use your Codex app or CLI</h2>
             <p>
-              Run <code>.\connect-codex.ps1</code> once. It updates your Codex configuration without changing the
-              project. There is no second Codex login, clone, or Docker worker.
+              Run <code>npx -y @melson/sdlc-mcp install</code> once. Approve the short-lived GitHub pairing code, then
+              restart Codex. There is no harness clone, shared token, <code>.env</code> file, or Docker worker.
             </p>
             <p>
               Start feature work in native Plan mode so Codex can ask its normal questions. After you choose to
@@ -1922,7 +2013,7 @@ function SetupStatus({ label }: { label: string }) {
   );
 }
 function SystemPage() {
-  const [ready, setReady] = useState<Record<string, unknown>>({});
+  const [ready, setReady] = useState<Readiness | null>(null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
@@ -1935,7 +2026,7 @@ function SystemPage() {
     headerEnv: '{}',
   });
   const load = () =>
-    Promise.all([api<Record<string, unknown>>('/api/readiness'), api<Integration[]>('/api/integrations')])
+    Promise.all([api<Readiness>('/api/readiness'), api<Integration[]>('/api/integrations')])
       .then(([r, i]) => {
         setReady(r);
         setIntegrations(i);
@@ -1991,8 +2082,35 @@ function SystemPage() {
         </div>
       </header>
       {error && <div className="notice error">{error}</div>}
-      <section className="panel">
-        <pre className="system-json">{JSON.stringify(ready, null, 2)}</pre>
+      <section className="principles readiness-grid">
+        <article>
+          <Bot />
+          <h2>Development agent</h2>
+          <p>{ready?.execution || 'Checking…'}</p>
+          <span className={`badge ${ready ? 'monitoring' : 'running'}`}>{ready ? 'ready' : 'checking'}</span>
+        </article>
+        <article>
+          <Github />
+          <h2>GitHub sign-in</h2>
+          <p>{ready?.githubIdentity ? 'Connected for dashboard identity' : 'Not configured by the administrator'}</p>
+          <span className={`badge ${ready?.githubIdentity ? 'monitoring' : 'blocked'}`}>
+            {ready?.githubIdentity ? 'connected' : 'unavailable'}
+          </span>
+        </article>
+        <article>
+          <GitBranch />
+          <h2>Repository operations</h2>
+          <p>{ready?.repositoryAccess || 'Checking…'}</p>
+          <span className={`badge ${ready ? 'monitoring' : 'running'}`}>{ready ? 'ready' : 'checking'}</span>
+        </article>
+        <article>
+          <Database />
+          <h2>Lifecycle storage</h2>
+          <p>{ready?.database ? 'Database connected' : 'Database unavailable'}</p>
+          <span className={`badge ${ready?.database ? 'monitoring' : 'blocked'}`}>
+            {ready?.database ? 'ready' : 'blocked'}
+          </span>
+        </article>
       </section>
       <section className="principles">
         <article>
@@ -2141,13 +2259,15 @@ function App() {
   useEffect(() => {
     loadMe();
   }, []);
+  const pairingCode = new URLSearchParams(window.location.search).get('pair') || undefined;
   if (!me)
     return (
       <div className="loading">
         <LoaderCircle className="spin" />
       </div>
     );
-  if (!me.user) return <Login me={me} />;
+  if (!me.user) return <Login me={me} pairCode={pairingCode} />;
+  if (pairingCode) return <PairingPage code={pairingCode} login={me.user.login} />;
   async function logout() {
     await api('/api/logout', { method: 'POST' });
     csrf = '';
@@ -2166,7 +2286,7 @@ function App() {
       ) : page === 'runs' ? (
         <RunsPage onOpen={setRunId} />
       ) : page === 'repositories' ? (
-        <RepositoriesPage />
+        <RepositoriesPage canManage={me.user.role === 'admin'} />
       ) : page === 'knowledge' ? (
         <KnowledgePage />
       ) : (

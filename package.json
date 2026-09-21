@@ -5,13 +5,14 @@
   "type": "module",
   "workspaces": [
     "apps/server",
-    "apps/web"
+    "apps/web",
+    "packages/sdlc-mcp"
   ],
   "scripts": {
     "dev": "concurrently -k -n api,web \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
-    "build": "npm run build -w apps/web && npm run build -w apps/server",
-    "format": "prettier --write \"{apps,shared,tests}/**/*.{ts,tsx,css}\" \"*.{js,ts,json}\"",
-    "format:check": "prettier --check \"{apps,shared,tests}/**/*.{ts,tsx,css}\" \"*.{js,ts,json}\"",
+    "build": "npm run build -w apps/web && npm run build -w apps/server && npm run build -w packages/sdlc-mcp",
+    "format": "prettier --write \"{apps,packages,shared,tests}/**/*.{ts,tsx,css}\" \"packages/**/*.{json,md}\" \"*.{js,ts,json}\"",
+    "format:check": "prettier --check \"{apps,packages,shared,tests}/**/*.{ts,tsx,css}\" \"packages/**/*.{json,md}\" \"*.{js,ts,json}\"",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
@@ -62,6 +63,6 @@
     "printWidth": 120
   },
   "engines": {
-    "node": ">=24"
+    "node": "24.x"
   }
 }

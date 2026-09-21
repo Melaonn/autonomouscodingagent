@@ -6,9 +6,17 @@ This MCP is a quality and governance layer. It does not control Codex's internal
 
 There is no Docker worker, second Codex login, repository clone, or hidden coding session.
 
-## Quick start on Windows
+## Install in Codex
 
-Requirements: Node.js 24+, Git, the Codex desktop app or CLI, and a GitHub account.
+Requirements: Node.js 20+, Git, the Codex desktop app or CLI, and a GitHub account.
+
+```powershell
+npx -y @melson/sdlc-mcp install
+```
+
+The command opens a short-lived pairing page. Sign in with GitHub, verify the displayed code, and select **Connect Codex**. The installer stores a device-specific credential locally, adds the `sdlc` MCP server to Codex, and installs the workflow instructions. Restart Codex, open an existing Git checkout, enter Plan mode, and give the normal feature or bug-fix prompt. No harness clone, `.env` file, personal access token, or shared administrator credential is required.
+
+## Self-host the control plane
 
 ### Application-owner authentication setup
 
@@ -19,11 +27,13 @@ For this local self-hosted demo, the application owner configures `.env` once wi
 ```dotenv
 GITHUB_CLIENT_ID=application_client_id
 GITHUB_CLIENT_SECRET=application_client_secret
-GITHUB_ALLOWED_USERS=comma_separated_github_logins
+GITHUB_ALLOWED_USERS=comma_separated_github_logins_or_*
 GITHUB_ADMIN_USERS=comma_separated_admin_logins
 ```
 
 In a deployed company instance, ActTrident would configure these values in its secret manager. Every developer would then see only the normal **Continue with GitHub** login. Login verifies identity only and does not request repository, organization, or workflow access.
+
+Set `GITHUB_ALLOWED_USERS=*` for a public demo. Every authenticated GitHub user then receives the operator role; only logins listed in `GITHUB_ADMIN_USERS` receive administrator access.
 
 1. Start the dashboard and API in PowerShell:
 
@@ -35,13 +45,13 @@ In a deployed company instance, ActTrident would configure these values in its s
 
 2. Select **Continue with GitHub**. GitHub's consent page only identifies the dashboard user. Repository inspection, edits, tests, commits, and pushes use the existing local checkout and Git configuration. Optional pull-request, CI, and deployment API calls reuse the developer's existing Git Credential Manager session; the browser login token is discarded after identity is established.
 
-3. Connect the harness to your existing Codex app and CLI configuration from another PowerShell window:
+3. For local control-plane development, connect the checkout directly from another PowerShell window:
 
    ```powershell
    .\connect-codex.ps1
    ```
 
-   This writes one managed instruction block under your Codex home directory. It does not change the project checkout.
+   External developers use the one-command npm installer instead. This script remains for application-owner development.
 
 4. Restart the Codex app or open a fresh Codex CLI session in your project. Turn on **Plan mode**, then give the high-level request:
 

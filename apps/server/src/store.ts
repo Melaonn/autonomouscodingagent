@@ -110,6 +110,9 @@ export class Store {
       ])
     ).rows.map((x) => x.data);
   }
+  async delete(kind: string, id: string) {
+    await this.db.query('DELETE FROM entities WHERE kind=$1 AND id=$2', [kind, id]);
+  }
   repositories() {
     return this.list<Repository>('repository');
   }

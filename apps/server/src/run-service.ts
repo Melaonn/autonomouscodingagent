@@ -123,6 +123,7 @@ export class RunService {
     const createdAt = now();
     const run: Run = {
       id: randomUUID(),
+      tenantId: repository.tenantId || actor.trim().toLowerCase(),
       repositoryId: repository.id,
       prompt,
       backend: 'codex',

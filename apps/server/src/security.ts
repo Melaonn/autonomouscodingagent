@@ -24,7 +24,7 @@ export function equalSecret(a: string, b: string) {
 }
 export function redact(text: string) {
   let result = text.replace(
-    /(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{20,})/g,
+    /(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{20,}|sdlc_[A-Za-z0-9_-]{20,})/g,
     '[REDACTED]',
   );
   for (const [key, value] of Object.entries(process.env))
