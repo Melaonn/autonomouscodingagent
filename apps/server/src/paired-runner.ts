@@ -249,7 +249,7 @@ This is a pre-authorized, noninteractive paired evaluation. The benchmark reques
 `;
 
 const reviewInstructions = `
-Perform only the requested native code review. Do not call MCP tools, start an SDLC run, modify files, or run the project's test suite. Inspect the uncommitted diff for correctness, regressions, security, and missing requirements. Your final response must be one JSON object with a summary string and a findings array. Each finding must contain id, severity, file, line, description, correction, and nullable criterionId. Return an empty findings array only when there are no actionable findings. Do not wrap the JSON in Markdown.
+Perform only the requested native code review. Do not call MCP tools, start an SDLC run, modify files, or run the project's test suite. Compare the uncommitted diff with the complete original request included below. Inspect for correctness, regressions, security, and missing requirements. Your final response must be one JSON object with a summary string and a findings array. Each finding must contain id, severity, file, line, description, correction, and nullable criterionId. Return an empty findings array only when the implementation satisfies the complete request. Do not wrap the JSON in Markdown.
 `;
 
 function reviewCodexConfig(run: PairedRun) {
@@ -380,6 +380,7 @@ async function completeHarnessReview(
   reviewerHome: string,
   result: VariantResult,
   outputDirectory: string,
+  prompt: string,
 ) {
   const state = result.harnessState;
   if (state?.status !== 'needs_review') return result;
@@ -388,6 +389,11 @@ async function completeHarnessReview(
   const reviewOutput = join(outputDirectory, `${task.id}-harness-review.json`);
   const reviewJsonl = join(outputDirectory, `${task.id}-harness-review.jsonl`);
   const reviewStderr = join(outputDirectory, `${task.id}-harness-review.stderr.log`);
+  await writeFile(
+    join(reviewerHome, 'AGENTS.md'),
+    `${reviewInstructions.trim()}\n\n## Complete original request\n\n${prompt.trim()}\n`,
+    'utf8',
+  );
   await writeFile(schemaPath, `${JSON.stringify(reviewSchema, null, 2)}\n`, 'utf8');
   const review = await runProcess(
     'codex',
@@ -504,7 +510,7 @@ export async function runPairedExperiment(input: PairedRun, inputBase: string) {
     let harness: VariantResult | undefined;
     if (input.executionVariant !== 'baseline') {
       harness = await runInitial(input, task, 'harness', harnessRoot, harnessHome, prompt, outputDirectory);
-      harness = await completeHarnessReview(input, task, harnessHome, reviewerHome, harness, outputDirectory);
+      harness = await completeHarnessReview(input, task, harnessHome, reviewerHome, harness, outputDirectory, prompt);
     }
     results.push({
       id: task.id,
