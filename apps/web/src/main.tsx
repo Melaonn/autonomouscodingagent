@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Activity,
@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Circle,
   Code2,
+  Copy,
   Database,
   FileCheck2,
   GitBranch,
@@ -499,10 +500,13 @@ function PhaseSection({
 function RunDetail({ id, back }: { id: string; back: () => void }) {
   const [bundle, setBundle] = useState<RunBundle | null>(null);
   const [error, setError] = useState('');
+  const [copyError, setCopyError] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [answer, setAnswer] = useState('');
   const [approve, setApprove] = useState(false);
   const [showAllEvents, setShowAllEvents] = useState(false);
   const [showAllArtifacts, setShowAllArtifacts] = useState(false);
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const load = () =>
     api<RunBundle>(`/api/runs/${id}`)
       .then(setBundle)
@@ -511,6 +515,14 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
     load();
     const t = setInterval(load, 3000);
     return () => clearInterval(t);
+  }, [id]);
+  useEffect(() => {
+    setCopyError(false);
+    setCopyState('idle');
+    return () => {
+      if (copyResetTimer.current) clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = null;
+    };
   }, [id]);
   async function action(path: string, body?: unknown) {
     try {
@@ -529,6 +541,23 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
       </div>
     );
   const run = bundle.run;
+  async function copyRunId() {
+    if (copyResetTimer.current) clearTimeout(copyResetTimer.current);
+    copyResetTimer.current = null;
+    setCopyError(false);
+    setCopyState('idle');
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(run.id);
+      setCopyState('copied');
+      copyResetTimer.current = setTimeout(() => {
+        setCopyState('idle');
+        copyResetTimer.current = null;
+      }, 2000);
+    } catch {
+      setCopyError(true);
+    }
+  }
   const guidance = runGuidance(run);
   const latestEvent = bundle.events.at(-1);
   const phaseNumber = seven.indexOf(run.phase) + 1;
@@ -553,7 +582,21 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
         </button>
         <div className="detail-title">
           <div>
-            <p className="eyebrow">RUN {run.id.slice(0, 8).toUpperCase()}</p>
+            <div className="run-id-line">
+              <p className="eyebrow">RUN {run.id.slice(0, 8).toUpperCase()}</p>
+              <button
+                type="button"
+                className={`button quiet run-id-copy ${copyState === 'copied' ? 'copied' : ''}`}
+                aria-label="Copy complete run ID"
+                onClick={copyRunId}
+              >
+                {copyState === 'copied' ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+                <span aria-hidden="true">{copyState === 'copied' ? 'Copied' : 'Copy'}</span>
+              </button>
+              <span className="sr-only" role="status" aria-live="polite">
+                {copyState === 'copied' ? 'Copied' : ''}
+              </span>
+            </div>
             <h1>{shortRunTitle(run)}</h1>
             <p>
               {run.policy.owner}/{run.policy.repo} · candidate{' '}
@@ -579,6 +622,17 @@ function RunDetail({ id, back }: { id: string; back: () => void }) {
           </div>
         </div>
       </header>
+      {copyError && (
+        <div className="notice error copy-error" role="alert">
+          <AlertTriangle />
+          <div>
+            <strong>Couldn’t copy the run ID</strong>
+            <p>
+              Clipboard access was denied or unavailable. Copy it manually: <code>{run.id}</code>
+            </p>
+          </div>
+        </div>
+      )}
       {error && (
         <div className="notice error">
           <AlertTriangle />

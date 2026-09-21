@@ -5,10 +5,12 @@ const apiPort = Number(process.env.E2E_API_PORT || 4410);
 const webPort = Number(process.env.E2E_WEB_PORT || 5174);
 const apiUrl = `http://127.0.0.1:${apiPort}`;
 const webUrl = `http://127.0.0.1:${webPort}`;
+const jsonReport = process.env.PLAYWRIGHT_JSON_OUTPUT_NAME;
 
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
+  reporter: jsonReport ? [['json', { outputFile: jsonReport }]] : undefined,
   webServer: [
     {
       command: 'npm run dev -w apps/server',
