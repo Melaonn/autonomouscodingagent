@@ -163,9 +163,7 @@ function Login({ me }: { me: Me }) {
             <AlertTriangle /> GitHub sign-in is unavailable on this instance. Contact the application administrator.
           </div>
         )}
-        <p className="fine-print">
-          Sign in with your GitHub identity. Every approval and policy change is audited.
-        </p>
+        <p className="fine-print">Sign in with your GitHub identity. Every approval and policy change is audited.</p>
       </section>
       <div className="login-grid" aria-hidden="true" />
     </main>
