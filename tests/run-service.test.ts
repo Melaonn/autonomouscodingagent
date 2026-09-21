@@ -127,6 +127,16 @@ describe('validation-only lifecycle', () => {
         summary: 'Validated',
         findings: [],
         criteria: [{ id: 'AC-1', satisfied: true, evidence: 'Unit gate passed' }],
+        requestCoverage: [
+          {
+            sourceQuote: 'Validate the existing checkout',
+            requirement: 'The existing checkout remains valid.',
+            status: 'satisfied',
+            evidence: 'The unit gate passed and review found no regression.',
+            file: 'index.js',
+            line: 1,
+          },
+        ],
       },
       'tester',
     );

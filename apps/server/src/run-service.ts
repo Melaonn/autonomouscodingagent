@@ -399,13 +399,17 @@ export class RunService {
     await this.store.artifact(run, 'native-review.json', JSON.stringify(review, null, 2));
     const blocking = review.findings.filter((finding) => ['critical', 'high'].includes(finding.severity));
     const unresolved = review.criteria.filter((criterion) => !criterion.satisfied || !criterion.evidence.trim());
-    if (blocking.length || unresolved.length) {
+    const uncovered = review.requestCoverage.filter((requirement) => requirement.status !== 'satisfied');
+    if (blocking.length || unresolved.length || uncovered.length) {
       run.status = 'repairing';
       run.phase = 'coding';
       run.step = 'repair';
       run.blocker = [
         ...blocking.map((finding) => `${finding.file}:${finding.line} ${finding.description}`),
         ...unresolved.map((criterion) => `${criterion.id}: acceptance evidence is unresolved`),
+        ...uncovered.map(
+          (requirement) => `${requirement.file}:${requirement.line} request requirement is ${requirement.status}`,
+        ),
       ].join('\n');
       return this.record(run, actor, 'run.review', 'review-failed', run.blocker);
     }

@@ -240,6 +240,16 @@ test('run detail explains the work in the seven SDLC phases without overflow', a
           { id: 'AC3', satisfied: true, evidence: 'Native review confirmed the verification grouping.' },
           { id: 'AC4', satisfied: true, evidence: 'Unit evidence covers the fourth acceptance criterion.' },
         ],
+        requestCoverage: [
+          {
+            sourceQuote: 'dashboard lifecycle',
+            requirement: 'The dashboard presents the lifecycle clearly.',
+            status: 'satisfied',
+            evidence: 'The review and UI assertions cover the requested lifecycle presentation.',
+            file: 'apps/web/src/App.tsx',
+            line: 1,
+          },
+        ],
       }),
     });
     if (!response.ok) throw new Error(await response.text());

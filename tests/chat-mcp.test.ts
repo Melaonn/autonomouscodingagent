@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createChatServer } from '../apps/server/src/chat-mcp.js';
+import { createChatServer, normalizeNativeReview, omittedTraceTerms } from '../apps/server/src/chat-mcp.js';
 import { ChatClient } from '../apps/server/src/chat-client.js';
 import { buildApi } from '../apps/server/src/api.js';
 import { config } from '../apps/server/src/config.js';
@@ -112,7 +112,7 @@ describe('Codex chat integration', () => {
       ]),
     );
     expect(names.some((name) => name.includes('approv'))).toBe(false);
-    expect(Buffer.byteLength(JSON.stringify(tools))).toBeLessThan(5_000);
+    expect(Buffer.byteLength(JSON.stringify(tools))).toBeLessThan(7_000);
 
     const call = async (name: string, args: Record<string, unknown>, options?: Parameters<Client['callTool']>[2]) => {
       const response = await client.callTool({ name, arguments: args }, undefined, options);
@@ -142,11 +142,50 @@ describe('Codex chat integration', () => {
       planSummary: 'Add validated task priorities to the existing module.',
       planSteps: ['add validation', 'test behavior'],
       requirementsSummary: 'Validated task priorities',
-      acceptanceCriteria: ['Configured priority verification passes'],
+      requirementCoverage: [
+        {
+          sourceQuote: 'Add task priorities with validation',
+          requirement: 'Task priorities are validated.',
+          acceptanceCriterion: 'Configured priority verification passes',
+          testEvidence: 'The unit gate exercises valid and invalid priorities.',
+        },
+      ],
       designSummary: 'Extend the existing module without changing unrelated behavior.',
       testStrategy: 'Run the configured unit gate.',
       risk: { level: 'high', rationale: 'Changes validation behavior' },
     };
+    const invalidTrace = await call('sdlc_verify', {
+      runId,
+      workspaceRoot: project,
+      checkpoint: {
+        ...checkpoint,
+        requirementCoverage: [
+          {
+            ...checkpoint.requirementCoverage[0],
+            sourceQuote: 'This requirement was never requested',
+          },
+        ],
+      },
+    });
+    expect(invalidTrace.error).toBe(true);
+    expect(invalidTrace.data.error).toContain('source quote is not present in the original request');
+    const narrowedTrace = await call('sdlc_verify', {
+      runId,
+      workspaceRoot: project,
+      checkpoint: {
+        ...checkpoint,
+        requirementCoverage: [
+          {
+            sourceQuote: 'Add task priorities with validation',
+            requirement: 'Task priorities are stored.',
+            acceptanceCriterion: 'Configured priorities persist.',
+            testEvidence: 'The unit gate exercises priorities.',
+          },
+        ],
+      },
+    });
+    expect(narrowedTrace.error).toBe(true);
+    expect(narrowedTrace.data.error).toContain('trace omits material request terms (validate)');
     const progress: string[] = [];
     const verified = await call(
       'sdlc_verify',
@@ -158,7 +197,7 @@ describe('Codex chat integration', () => {
     expect(verified.data.verification.passed).toContain('unit');
     expect((await store.getRun(runId))?.contract?.criteria[0].checkIds).toEqual(['unit']);
     expect((await store.getRun(runId))?.contract?.criteria[0].evidence).toBe('test');
-    expect(progress).toEqual(expect.arrayContaining(['Starting unit', expect.stringContaining('unit passed')]));
+    expect(progress).toEqual([]);
     expect((await call('sdlc_start', { ...input, prompt: 'Start while native review is pending' })).error).toBe(true);
     const blockedByNativeReview = await call('sdlc_review', {
       runId,
@@ -175,6 +214,17 @@ describe('Codex chat integration', () => {
             criterionId: 'AC-1',
           },
         ],
+        criteria: [{ id: 'AC-1', satisfied: false, evidence: 'Validation remains incomplete.' }],
+        requestCoverage: [
+          {
+            sourceQuote: 'Add task priorities with validation',
+            requirement: 'Task priorities are validated.',
+            status: 'missing',
+            evidence: 'The invalid-priority path is absent.',
+            file: 'index.js',
+            line: 1,
+          },
+        ],
       },
     });
     expect(blockedByNativeReview.data.status).toBe('repairing');
@@ -188,6 +238,17 @@ describe('Codex chat integration', () => {
       review: {
         summary: 'Acceptance evidence is complete',
         findings: [],
+        criteria: [{ id: 'AC-1', satisfied: true, evidence: 'The unit gate and diff cover validation.' }],
+        requestCoverage: [
+          {
+            sourceQuote: 'Add task priorities with validation',
+            requirement: 'Task priorities are validated.',
+            status: 'satisfied',
+            evidence: 'Validation and its focused test are present.',
+            file: 'index.js',
+            line: 1,
+          },
+        ],
       },
     });
     expect(reviewed.data.step).toBe('publish');
@@ -291,7 +352,14 @@ describe('Codex chat integration', () => {
           planSummary: 'Create the missing repository SDLC foundations.',
           planSteps: ['configure deterministic commands', 'add CI'],
           requirementsSummary: 'The detected SDLC gaps are executable and verified.',
-          acceptanceCriteria: ['Every configured test layer passes.'],
+          requirementCoverage: [
+            {
+              sourceQuote: 'Add automatic project onboarding for the local repository',
+              requirement: 'The local repository is onboarded automatically.',
+              acceptanceCriterion: 'Every configured test layer passes.',
+              testEvidence: 'Unit, integration, and E2E gates run independently.',
+            },
+          ],
           designSummary: 'Use package scripts as stable local and CI entry points.',
           testStrategy: 'Run unit, integration, and E2E commands independently.',
           risk: { level: 'medium', rationale: 'Adds repository-wide development and CI infrastructure.' },
@@ -325,5 +393,55 @@ describe('Codex chat integration', () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
     for (const [, init] of fetchMock.mock.calls) expect(init?.redirect).toBe('error');
+  });
+});
+
+describe('requirement trace validation', () => {
+  it('keeps coordinated request clauses visible through review', () => {
+    const quote = 'Using autofocus on a dialog or its descendants is recommended by the standard';
+    expect(omittedTraceTerms(quote, 'Allow autofocus on dialog elements.')).toEqual(['descendant', 'standard']);
+    expect(omittedTraceTerms(quote, 'Allow autofocus on dialog elements and descendants.')).toEqual([]);
+
+    const normalized = normalizeNativeReview(
+      quote,
+      [
+        {
+          id: 'AC-1',
+          description: 'Dialog autofocus is accepted.',
+          sourceQuote: quote,
+          requirement: 'Allow autofocus on dialogs and descendants.',
+          testEvidence: 'Direct and nested cases have focused tests.',
+          evidence: 'test',
+          checkIds: ['unit'],
+          category: 'functional',
+        },
+      ],
+      {
+        scope: 'uncommitted',
+        summary: 'The direct dialog case passes.',
+        findings: [],
+        criteria: [{ id: 'AC-1', satisfied: true, evidence: 'A direct dialog fixture passes.' }],
+        requestCoverage: [
+          {
+            sourceQuote: quote,
+            requirement: 'Allow autofocus on dialog elements.',
+            status: 'satisfied',
+            evidence: 'The direct dialog fixture passes.',
+            file: 'src/rule.ts',
+            line: 10,
+          },
+        ],
+      },
+    );
+
+    expect(normalized.requestCoverage[0].status).toBe('unverified');
+    expect(normalized.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: 'high',
+          description: expect.stringContaining('descendant'),
+        }),
+      ]),
+    );
   });
 });

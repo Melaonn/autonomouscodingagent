@@ -99,10 +99,14 @@ function trials(count: number, baselineQuality: number, harnessQuality: number, 
 }
 
 describe('paired harness evaluation', () => {
-  it('does not allow experiments to weaken the 50 percent efficiency target', () => {
+  it('does not assume that an MCP reduces model usage', () => {
     const candidate = experiment(5);
-    candidate.thresholds.tokenReductionTarget = 0.49;
-    expect(evaluationExperimentSchema.safeParse(candidate).success).toBe(false);
+    expect(candidate.thresholds.tokenReductionTarget).toBe(0);
+    expect(markdownReport(buildEvaluationReport(candidate, trials(5, 1, 1)))).toContain(
+      'No token-reduction hypothesis was configured',
+    );
+    candidate.thresholds.tokenReductionTarget = 0.25;
+    expect(evaluationExperimentSchema.safeParse(candidate).success).toBe(true);
   });
 
   it('parses exact Codex JSONL usage and completed tool events', async () => {
@@ -168,7 +172,9 @@ describe('paired harness evaluation', () => {
   });
 
   it('accepts lower usage only when quality remains non-inferior', () => {
-    const report = buildEvaluationReport(experiment(5), trials(5, 1, 1, 0.5));
+    const candidate = experiment(5);
+    candidate.thresholds.tokenReductionTarget = 0.5;
+    const report = buildEvaluationReport(candidate, trials(5, 1, 1, 0.5));
     expect(report.verdict).toBe('beneficial');
     expect(report.claim).toContain('total and uncached token usage');
     expect(report.usage.targetReduction).toBe(0.5);
@@ -176,12 +182,14 @@ describe('paired harness evaluation', () => {
   });
 
   it('does not claim efficiency by reducing only cached-token-heavy totals', () => {
+    const candidate = experiment(5);
+    candidate.thresholds.tokenReductionTarget = 0.5;
     const measured = trials(5, 1, 1, 0.4);
     for (const trial of measured) {
       trial.baseline.usage!.uncachedTokens = 100;
       trial.harness.usage!.uncachedTokens = 80;
     }
-    const report = buildEvaluationReport(experiment(5), measured);
+    const report = buildEvaluationReport(candidate, measured);
     expect(report.usage.totalTokenRatio).toBe(0.4);
     expect(report.usage.uncachedTokenRatio).toBe(0.8);
     expect(report.usage.targetMet).toBe(false);

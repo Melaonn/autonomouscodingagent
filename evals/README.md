@@ -62,7 +62,7 @@ The evaluator does not launch an agent. It measures already completed paired che
 The report says **beneficial** only when one of these statements is supported:
 
 1. The lower bound of the paired 95% confidence interval shows a quality improvement and there are no critical regressions. Higher token use is allowed but reported.
-2. Quality is non-inferior within the configured margin and both total and uncached token use meet the configured reduction target. New experiments default to a 50% reduction target, and the evaluator does not allow a lower target.
+2. Quality is non-inferior within the configured margin and both total and uncached token use meet an explicitly configured reduction target. New experiments default to no efficiency hypothesis because an MCP does not control the underlying model loop.
 
 Fewer than five paired trials, missing usage logs, identical checkouts, unfair starting commits, evaluator-mutated workspaces, and wide confidence intervals are reported explicitly. The report also states that blinding is an operator responsibility because software cannot prove the hidden checks were never shown to an agent. An inconclusive report is a valid result and must not be presented as proof.
 

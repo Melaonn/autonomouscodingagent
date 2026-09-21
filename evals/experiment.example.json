@@ -5,7 +5,7 @@
   "thresholds": {
     "minimumPairedTrials": 5,
     "qualityNonInferiority": 0.02,
-    "tokenReductionTarget": 0.5
+    "tokenReductionTarget": 0
   },
   "trials": [
     {

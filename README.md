@@ -2,6 +2,8 @@
 
 This project adds an evidence-based software development lifecycle around the Codex app or CLI that a developer already uses. Codex remains visible in one conversation and edits the existing local checkout. The control plane records requirements and design, runs repository-defined checks, sends failures back to the same conversation, follows GitHub CI, and stops for explicit deployment approval.
 
+This MCP is a quality and governance layer. It does not control Codex's internal context, inference loop, compaction, or model routing, so it does not claim to reduce model usage. Tool schemas and calls add some overhead. The controller limits avoidable overhead by keeping successful logs and long-running progress out of the model context, but material usage reduction would require an owned agent harness with explicit context selection and turn scheduling.
+
 There is no Docker worker, second Codex login, repository clone, or hidden coding session.
 
 ## Quick start on Windows
@@ -86,7 +88,7 @@ The repository includes a paired evaluator; the existence of the MCP is not trea
 npm run evaluate -- --input evals/experiment.json --out evals/results/company-pilot
 ```
 
-The evaluator reports paired quality confidence, critical regressions, total and uncached token ratios, interventions, repairs, and fairness failures. It returns a positive verdict only for statistically supported quality improvement, or for non-inferior quality with the configured token reduction. See [evals/README.md](evals/README.md) for the protocol. Until representative paired trials pass that policy, performance improvement remains unproven.
+The evaluator reports paired quality confidence, critical regressions, total and uncached token ratios, interventions, repairs, and fairness failures. It returns a positive verdict for statistically supported quality improvement. A separate efficiency verdict is possible only when an experiment explicitly configures and meets a token-reduction target without reducing quality; no reduction is assumed by default. See [evals/README.md](evals/README.md) for the protocol. Until representative paired trials pass that policy, performance improvement remains unproven.
 
 The first real five-task run is published as [an inconclusive pilot](evals/results/pilot-2026-09-20.md). An [optimized follow-up](evals/results/optimized-pilot-2026-09-20.md) kept the 5/5 quality tie while reducing harness overhead from 1.44× to 1.14× measured tokens and from 1.78× to 1.21× wall time. It also demonstrated one automatic compile-defect repair. The project still makes no performance-benefit claim because final quality did not improve and cost remained higher than the baseline.
 

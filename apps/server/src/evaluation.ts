@@ -30,9 +30,9 @@ export const evaluationExperimentSchema = z.object({
     .object({
       minimumPairedTrials: z.number().int().min(5).default(5),
       qualityNonInferiority: z.number().min(0).max(0.2).default(0.02),
-      tokenReductionTarget: z.number().min(0.5).max(0.8).default(0.5),
+      tokenReductionTarget: z.number().min(0).max(0.8).default(0),
     })
-    .default({ minimumPairedTrials: 5, qualityNonInferiority: 0.02, tokenReductionTarget: 0.5 }),
+    .default({ minimumPairedTrials: 5, qualityNonInferiority: 0.02, tokenReductionTarget: 0 }),
   trials: z
     .array(
       z.object({
@@ -283,6 +283,7 @@ export function buildEvaluationReport(experiment: EvaluationExperiment, trials: 
       : ratio(harnessUncachedTokens, baselineUncachedTokens);
   const tokenTargetRatio = 1 - experiment.thresholds.tokenReductionTarget;
   const usageTargetMet =
+    experiment.thresholds.tokenReductionTarget > 0 &&
     usageComplete &&
     totalTokenRatio !== undefined &&
     uncachedTokenRatio !== undefined &&
@@ -423,6 +424,9 @@ const duration = (value?: number) => (value === undefined ? 'unavailable' : `${(
 const tableCell = (value: string) => value.replaceAll('|', '\\|').replaceAll(/\r?\n/g, ' ');
 
 export function markdownReport(report: EvaluationReport) {
+  const efficiencyTarget = report.usage.targetReduction
+    ? `The configured efficiency hypothesis is a ${percent(report.usage.targetReduction)} reduction in both total and uncached tokens. Target met: ${report.usage.targetMet ? 'yes' : 'no'}.`
+    : 'No token-reduction hypothesis was configured. Usage is reported as a measured cost, not as a product claim.';
   const trialRows = report.trials
     .map(
       (trial) =>
@@ -442,5 +446,5 @@ export function markdownReport(report: EvaluationReport) {
   const failures = failureRows.length
     ? `| Trial | Variant | Check | Kind | Severity | Evidence |\n| --- | --- | --- | --- | --- | --- |\n${failureRows.join('\n')}`
     : 'No failed checks.';
-  return `# ${report.name}\n\n**Verdict: ${report.verdict.toUpperCase()}**\n\n${report.claim}\n\n- Harness revision: ${report.harnessRevision}\n- Policy revision: ${report.policyRevision}\n\n## Quality\n\n| Metric | Baseline | Harness |\n| --- | ---: | ---: |\n| Mean held-out quality | ${percent(report.quality.baselineMean)} | ${percent(report.quality.harnessMean)} |\n| Paired wins / ties / losses | - | ${report.quality.wins} / ${report.quality.ties} / ${report.quality.losses} |\n| Mean quality delta | - | ${report.quality.meanDelta >= 0 ? '+' : ''}${percent(report.quality.meanDelta)} |\n| 95% confidence interval | - | ${percent(report.quality.confidence95[0])} to ${percent(report.quality.confidence95[1])} |\n| Critical regressions | - | ${report.quality.criticalRegressions.length} |\n\n## Usage and effort\n\nThe efficiency target is a ${percent(report.usage.targetReduction)} reduction in both total and uncached tokens. Target met: ${report.usage.targetMet ? 'yes' : 'no'}.\n\n| Metric | Baseline | Harness | Ratio |\n| --- | ---: | ---: | ---: |\n| Usage measurement complete | ${report.usage.baselineComplete ? 'yes' : 'no'} | ${report.usage.harnessComplete ? 'yes' : 'no'} | - |\n| Total tokens | ${report.usage.baselineTotalTokens ?? 'unavailable'} | ${report.usage.harnessTotalTokens ?? 'unavailable'} | ${tokenRatio(report.usage.totalTokenRatio)} |\n| Uncached tokens | ${report.usage.baselineUncachedTokens ?? 'unavailable'} | ${report.usage.harnessUncachedTokens ?? 'unavailable'} | ${tokenRatio(report.usage.uncachedTokenRatio)} |\n| Unmetered active turns | ${report.usage.baselineUnmeteredTurns ?? 'unavailable'} | ${report.usage.harnessUnmeteredTurns ?? 'unavailable'} | - |\n| MCP tool calls | ${report.usage.baselineMcpToolCalls ?? 'unavailable'} | ${report.usage.harnessMcpToolCalls ?? 'unavailable'} | - |\n| Command executions | ${report.usage.baselineCommandExecutions ?? 'unavailable'} | ${report.usage.harnessCommandExecutions ?? 'unavailable'} | - |\n| Wall time | ${duration(report.process.baselineWallTimeMs)} | ${duration(report.process.harnessWallTimeMs)} | - |\n| Human interventions | ${report.process.baselineInterventions} | ${report.process.harnessInterventions} | - |\n| Repair iterations | ${report.process.baselineRepairIterations} | ${report.process.harnessRepairIterations} | - |\n\n## Paired trials\n\n| Trial | Model / effort | Fairness | Baseline quality | Harness quality | Delta | Token ratio |\n| --- | --- | --- | ---: | ---: | ---: | ---: |\n${trialRows}\n\n## Failed checks\n\n${failures}\n\n## Limitations\n\n${report.limitations.length ? report.limitations.map((item) => `- ${item}`).join('\n') : '- None recorded.'}\n`;
+  return `# ${report.name}\n\n**Verdict: ${report.verdict.toUpperCase()}**\n\n${report.claim}\n\n- Harness revision: ${report.harnessRevision}\n- Policy revision: ${report.policyRevision}\n\n## Quality\n\n| Metric | Baseline | Harness |\n| --- | ---: | ---: |\n| Mean held-out quality | ${percent(report.quality.baselineMean)} | ${percent(report.quality.harnessMean)} |\n| Paired wins / ties / losses | - | ${report.quality.wins} / ${report.quality.ties} / ${report.quality.losses} |\n| Mean quality delta | - | ${report.quality.meanDelta >= 0 ? '+' : ''}${percent(report.quality.meanDelta)} |\n| 95% confidence interval | - | ${percent(report.quality.confidence95[0])} to ${percent(report.quality.confidence95[1])} |\n| Critical regressions | - | ${report.quality.criticalRegressions.length} |\n\n## Usage and effort\n\n${efficiencyTarget}\n\n| Metric | Baseline | Harness | Ratio |\n| --- | ---: | ---: | ---: |\n| Usage measurement complete | ${report.usage.baselineComplete ? 'yes' : 'no'} | ${report.usage.harnessComplete ? 'yes' : 'no'} | - |\n| Total tokens | ${report.usage.baselineTotalTokens ?? 'unavailable'} | ${report.usage.harnessTotalTokens ?? 'unavailable'} | ${tokenRatio(report.usage.totalTokenRatio)} |\n| Uncached tokens | ${report.usage.baselineUncachedTokens ?? 'unavailable'} | ${report.usage.harnessUncachedTokens ?? 'unavailable'} | ${tokenRatio(report.usage.uncachedTokenRatio)} |\n| Unmetered active turns | ${report.usage.baselineUnmeteredTurns ?? 'unavailable'} | ${report.usage.harnessUnmeteredTurns ?? 'unavailable'} | - |\n| MCP tool calls | ${report.usage.baselineMcpToolCalls ?? 'unavailable'} | ${report.usage.harnessMcpToolCalls ?? 'unavailable'} | - |\n| Command executions | ${report.usage.baselineCommandExecutions ?? 'unavailable'} | ${report.usage.harnessCommandExecutions ?? 'unavailable'} | - |\n| Wall time | ${duration(report.process.baselineWallTimeMs)} | ${duration(report.process.harnessWallTimeMs)} | - |\n| Human interventions | ${report.process.baselineInterventions} | ${report.process.harnessInterventions} | - |\n| Repair iterations | ${report.process.baselineRepairIterations} | ${report.process.harnessRepairIterations} | - |\n\n## Paired trials\n\n| Trial | Model / effort | Fairness | Baseline quality | Harness quality | Delta | Token ratio |\n| --- | --- | --- | ---: | ---: | ---: | ---: |\n${trialRows}\n\n## Failed checks\n\n${failures}\n\n## Limitations\n\n${report.limitations.length ? report.limitations.map((item) => `- ${item}`).join('\n') : '- None recorded.'}\n`;
 }

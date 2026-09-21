@@ -63,7 +63,7 @@ describe('paired benchmark runner', () => {
     expect(parseHarnessState(jsonl)).toEqual({ runId: 'run-1', status: 'needs_review', attempt: 2 });
   });
 
-  it('accepts structured review findings and explicit no-finding prose', () => {
+  it('requires structured requirement and criterion coverage from native review', () => {
     const review = {
       summary: 'A nested case is missing.',
       findings: [
@@ -77,12 +77,22 @@ describe('paired benchmark runner', () => {
           criterionId: null,
         },
       ],
+      criteria: [{ id: 'AC-1', satisfied: false, evidence: 'The nested case has no test.' }],
+      requestCoverage: [
+        {
+          sourceQuote: 'dialog or its descendants',
+          requirement: 'Support the dialog and descendant cases.',
+          status: 'missing',
+          evidence: 'The implementation only checks the current element.',
+          file: 'src/rule.ts',
+          line: 10,
+        },
+      ],
     };
     expect(parseNativeReviewOutput(JSON.stringify(review))).toEqual(review);
-    expect(parseNativeReviewOutput('No regressions are evident in the diff.')).toEqual({
-      summary: 'No regressions are evident in the diff.',
-      findings: [],
-    });
+    expect(() => parseNativeReviewOutput('No regressions are evident in the diff.')).toThrow(
+      'Native review did not return structured findings',
+    );
     expect(() => parseNativeReviewOutput('The nested case is broken.')).toThrow(
       'Native review did not return structured findings',
     );

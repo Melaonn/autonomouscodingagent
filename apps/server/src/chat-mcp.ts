@@ -25,21 +25,36 @@ const runInput = { runId: z.string().uuid() };
 const active = new Set(['running', 'repairing']);
 const checkpointText = z.string().trim().min(1).max(2_000);
 const checkpointItem = z.string().trim().min(1).max(500);
+const requirementTraceSchema = z.object({
+  sourceQuote: z.string().trim().min(3).max(500),
+  requirement: checkpointItem,
+  acceptanceCriterion: checkpointItem,
+  testEvidence: checkpointItem,
+});
 const checkpointInputSchema = z.object({
   planSummary: checkpointText,
   planSteps: z.array(checkpointItem).min(1).max(12),
   requirementsSummary: checkpointText,
-  acceptanceCriteria: z.array(checkpointItem).min(1).max(20),
+  requirementCoverage: z.array(requirementTraceSchema).min(1).max(20),
   designSummary: checkpointText,
   testStrategy: checkpointText,
   risk: changeRiskSchema,
 });
+const reviewCriterionSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  satisfied: z.boolean(),
+  evidence: z.string().trim().min(1).max(2_000),
+});
+const requestCoverageSchema = reviewSchema.shape.requestCoverage;
 const nativeReviewSchema = z.object({
   scope: z.enum(['uncommitted', 'base-branch', 'commit', 'custom']).default('uncommitted'),
   summary: reviewSchema.shape.summary,
   findings: reviewSchema.shape.findings,
+  criteria: z.array(reviewCriterionSchema).min(1).max(30),
+  requestCoverage: requestCoverageSchema,
 });
 export type NativeReview = z.infer<typeof nativeReviewSchema>;
+type RequestCoverage = z.infer<typeof requestCoverageSchema>[number];
 const setupDecisionSchema = z.object({
   e2e: z.enum(['required', 'not_applicable']).default('required'),
   ci: z.enum(['create', 'preserve', 'waive']).default('create'),
@@ -120,38 +135,251 @@ function testGateIds(policy: Repository) {
   return testGateIds;
 }
 
-export async function submitNativeReview(api: ChatApi, runId: string, review: NativeReview) {
-  const detail = await api.request<Detail>(`/api/runs/${runId}`);
-  const criteria = (detail.run.contract?.criteria || []).map((criterion) => {
-    const blockingFinding = review.findings.find(
-      (finding) => finding.criterionId === criterion.id && ['critical', 'high'].includes(finding.severity),
-    );
-    if (criterion.evidence === 'test') {
-      const gates = criterion.checkIds.filter((id) =>
-        detail.run.gates.some((gate) => gate.id === id && gate.status === 'pass'),
-      );
-      return {
-        id: criterion.id,
-        satisfied: gates.length === criterion.checkIds.length && !blockingFinding,
-        evidence: gates.length ? `Passing gates: ${gates.join(', ')}` : '',
-      };
+const traceBoundaries = new Set([
+  'after',
+  'and',
+  'before',
+  'but',
+  'except',
+  'if',
+  'including',
+  'or',
+  'unless',
+  'until',
+  'when',
+  'while',
+  'with',
+  'without',
+]);
+const traceStopWords = new Set([
+  'add',
+  'allow',
+  'also',
+  'any',
+  'are',
+  'been',
+  'being',
+  'both',
+  'can',
+  'change',
+  'could',
+  'described',
+  'does',
+  'doing',
+  'each',
+  'ensure',
+  'existing',
+  'expected',
+  'fix',
+  'from',
+  'further',
+  'have',
+  'having',
+  'here',
+  'implement',
+  'into',
+  'just',
+  'made',
+  'make',
+  'makes',
+  'might',
+  'more',
+  'most',
+  'must',
+  'need',
+  'once',
+  'only',
+  'other',
+  'over',
+  'preserve',
+  'recommended',
+  'reported',
+  'request',
+  'same',
+  'should',
+  'some',
+  'such',
+  'support',
+  'than',
+  'that',
+  'their',
+  'them',
+  'then',
+  'there',
+  'these',
+  'they',
+  'this',
+  'those',
+  'through',
+  'under',
+  'using',
+  'very',
+  'want',
+  'were',
+  'what',
+  'where',
+  'which',
+  'will',
+  'would',
+]);
+const traceSegmenter = new Intl.Segmenter('en', { granularity: 'word' });
+
+function stemTraceTerm(value: string) {
+  if (value.length > 5 && value.endsWith('ies')) return `${value.slice(0, -3)}y`;
+  if (value.length > 7 && value.endsWith('ation')) return `${value.slice(0, -5)}ate`;
+  if (value.length > 6 && value.endsWith('ated')) return `${value.slice(0, -4)}ate`;
+  if (value.length > 7 && value.endsWith('ating')) return `${value.slice(0, -5)}ate`;
+  if (value.length > 6 && value.endsWith('ing')) return value.slice(0, -3);
+  if (value.length > 5 && value.endsWith('ed')) return value.slice(0, -2);
+  if (value.length > 5 && value.endsWith('es')) return value.slice(0, -2);
+  if (value.length > 4 && value.endsWith('s')) return value.slice(0, -1);
+  return value;
+}
+
+function traceClauses(value: string) {
+  const clauses: string[][] = [[]];
+  for (const chunk of value.split(/\s+/)) {
+    if (chunk.startsWith('http://') || chunk.startsWith('https://')) continue;
+    for (const segment of traceSegmenter.segment(chunk)) {
+      if (!segment.isWordLike) continue;
+      const word = segment.segment.toLocaleLowerCase('en');
+      if (traceBoundaries.has(word)) {
+        if (clauses.at(-1)?.length) clauses.push([]);
+        continue;
+      }
+      if (word.length < 4 || traceStopWords.has(word)) continue;
+      const term = stemTraceTerm(word);
+      if (!clauses.at(-1)?.includes(term)) clauses.at(-1)?.push(term);
     }
-    if (criterion.evidence === 'human')
-      return { id: criterion.id, satisfied: Boolean(detail.run.answer), evidence: detail.run.answer || '' };
-    return {
-      id: criterion.id,
-      satisfied: !blockingFinding,
-      evidence: blockingFinding ? '' : review.summary,
-    };
-  });
-  return api.request<Run>(`/api/runs/${runId}/review`, {
-    source: 'codex-native-review',
-    ...review,
-    criteria,
+  }
+  return clauses.filter((clause) => clause.length);
+}
+
+export function omittedTraceTerms(sourceQuote: string, trace: string) {
+  const target = new Set(traceClauses(trace).flat());
+  return traceClauses(sourceQuote).flatMap((clause) => {
+    const represented = clause.filter((term) => target.has(term));
+    const required = Math.max(1, Math.ceil(clause.length / 2));
+    return represented.length >= required ? [] : clause.filter((term) => !target.has(term));
   });
 }
 
-function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, policy: Repository) {
+function sourceQuoteIssue(prompt: string, sourceQuote: string) {
+  const normalizedPrompt = normalizedTrace(prompt);
+  const quote = normalizedTrace(sourceQuote);
+  return normalizedPrompt.includes(quote)
+    ? null
+    : `Source quote is not present in the original request: ${sourceQuote}`;
+}
+
+export function normalizeNativeReview(
+  prompt: string,
+  expectedCriteria: TaskContract['criteria'],
+  review: NativeReview,
+) {
+  const parsed = nativeReviewSchema.parse(review);
+  const findings = [...parsed.findings];
+  const seen = new Set<string>();
+  const requestCoverage = parsed.requestCoverage.map((coverage, index) => {
+    const quote = normalizedTrace(coverage.sourceQuote);
+    const quoteIssue = sourceQuoteIssue(prompt, coverage.sourceQuote);
+    const duplicate = seen.has(quote);
+    seen.add(quote);
+    const omitted = omittedTraceTerms(coverage.sourceQuote, `${coverage.requirement} ${coverage.evidence}`);
+    const issue = quoteIssue || (duplicate ? `Source quote is duplicated: ${coverage.sourceQuote}` : null);
+    const evidenceIssue = omitted.length ? `Review trace omits material request terms: ${omitted.join(', ')}` : null;
+    if (!issue && !evidenceIssue) return coverage;
+    findings.push({
+      id: `TRACE-${index + 1}`,
+      severity: 'high',
+      file: coverage.file,
+      line: coverage.line,
+      description: issue || evidenceIssue || 'Review trace is incomplete.',
+      correction: `Re-evaluate the complete requirement in the original request: ${coverage.sourceQuote}`,
+      criterionId: null,
+    });
+    return {
+      ...coverage,
+      status: 'unverified' as const,
+      evidence: `${coverage.evidence} Controller validation: ${issue || evidenceIssue}`,
+    };
+  });
+
+  for (const criterion of expectedCriteria) {
+    if (!criterion.sourceQuote) continue;
+    const quote = normalizedTrace(criterion.sourceQuote);
+    if (seen.has(quote)) continue;
+    const missing: RequestCoverage = {
+      sourceQuote: criterion.sourceQuote,
+      requirement: criterion.requirement || criterion.description,
+      status: 'unverified',
+      evidence: `The native review omitted accepted requirement ${criterion.id}.`,
+      file: '',
+      line: 0,
+    };
+    requestCoverage.push(missing);
+    findings.push({
+      id: `TRACE-${requestCoverage.length}`,
+      severity: 'high',
+      file: '',
+      line: 0,
+      description: `Native review omitted accepted requirement ${criterion.id}: ${criterion.sourceQuote}`,
+      correction: 'Review the implementation and focused test evidence for this complete request clause.',
+      criterionId: criterion.id,
+    });
+  }
+
+  requestCoverage.forEach((coverage, index) => {
+    if (coverage.status === 'satisfied') return;
+    findings.push({
+      id: `REQ-${index + 1}`,
+      severity: 'high',
+      file: coverage.file,
+      line: coverage.line,
+      description: `${coverage.requirement} (${coverage.status}): ${coverage.evidence}`,
+      correction: `Implement and verify the requirement quoted from the request: ${coverage.sourceQuote}`,
+      criterionId: null,
+    });
+  });
+  return { ...parsed, requestCoverage, findings };
+}
+
+export async function submitNativeReview(api: ChatApi, runId: string, review: NativeReview) {
+  const detail = await api.request<Detail>(`/api/runs/${runId}`);
+  const parsed = normalizeNativeReview(detail.run.prompt, detail.run.contract?.criteria || [], review);
+  return api.request<Run>(`/api/runs/${runId}/review`, {
+    source: 'codex-native-review',
+    ...parsed,
+  });
+}
+
+function normalizedTrace(value: string) {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function assertSourceQuotes(prompt: string, coverage: { sourceQuote: string }[]) {
+  const seen = new Set<string>();
+  for (const item of coverage) {
+    const quote = normalizedTrace(item.sourceQuote);
+    const issue = sourceQuoteIssue(prompt, item.sourceQuote);
+    if (issue) throw new Error(`Requirement ${issue.charAt(0).toLowerCase()}${issue.slice(1)}`);
+    if (seen.has(quote)) throw new Error(`Requirement source quote is duplicated: ${item.sourceQuote}`);
+    seen.add(quote);
+  }
+}
+
+function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, policy: Repository, prompt: string) {
+  assertSourceQuotes(prompt, checkpoint.requirementCoverage);
+  for (const coverage of checkpoint.requirementCoverage) {
+    const omitted = omittedTraceTerms(
+      coverage.sourceQuote,
+      `${coverage.requirement} ${coverage.acceptanceCriterion} ${coverage.testEvidence}`,
+    );
+    if (omitted.length)
+      throw new Error(
+        `Requirement trace omits material request terms (${omitted.join(', ')}): ${coverage.sourceQuote}`,
+      );
+  }
   const checkIds = testGateIds(policy);
   const plan = planSchema.parse({
     source: 'codex-plan-mode',
@@ -166,10 +394,13 @@ function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, pol
   const requirements: TaskContract = contractSchema.parse({
     summary: checkpoint.requirementsSummary,
     clarification: null,
-    criteria: checkpoint.acceptanceCriteria.map((description, index) => ({
+    criteria: checkpoint.requirementCoverage.map((coverage, index) => ({
       id: `AC-${index + 1}`,
       category: 'functional',
-      description,
+      description: coverage.acceptanceCriterion,
+      sourceQuote: coverage.sourceQuote,
+      requirement: coverage.requirement,
+      testEvidence: coverage.testEvidence,
       evidence: 'test',
       checkIds,
     })),
@@ -184,7 +415,9 @@ function expandCheckpoint(checkpoint: z.infer<typeof checkpointInputSchema>, pol
     uiBehavior: [],
     security: [],
     compatibility: 'Preserve existing behavior outside the accepted request.',
-    testStrategy: checkpoint.testStrategy,
+    testStrategy: `${checkpoint.testStrategy}\n\nRequirement evidence:\n${checkpoint.requirementCoverage
+      .map((coverage) => `- ${coverage.requirement}: ${coverage.testEvidence}`)
+      .join('\n')}`,
   });
   return { plan, requirements, design, risk: checkpoint.risk };
 }
@@ -353,12 +586,15 @@ export function createChatServer(api: ChatApi) {
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    ({ runId, workspaceRoot, checkpoint }, extra) =>
+    ({ runId, workspaceRoot, checkpoint }) =>
       protect(async () => {
         let detail = await api.request<Detail>(`/api/runs/${runId}`);
         if (detail.run.phase === 'planning') {
           if (!checkpoint) throw new Error('The first verification requires the accepted lifecycle checkpoint');
-          await api.request<Run>(`/api/runs/${runId}/specification`, expandCheckpoint(checkpoint, detail.run.policy));
+          await api.request<Run>(
+            `/api/runs/${runId}/specification`,
+            expandCheckpoint(checkpoint, detail.run.policy, detail.run.prompt),
+          );
           detail = await api.request<Detail>(`/api/runs/${runId}`);
         } else if (checkpoint) {
           throw new Error('Lifecycle checkpoint is already recorded; omit it on repair verification');
@@ -372,18 +608,6 @@ export function createChatServer(api: ChatApi) {
         const results: { commandId: string; result: Awaited<ReturnType<typeof executeCheck>> }[] = new Array(
           checks.length,
         );
-        let progressStep = 0;
-        const notify = async (message: string) => {
-          const progressToken = extra._meta?.progressToken;
-          if (progressToken === undefined) return;
-          progressStep += 1;
-          await extra
-            .sendNotification({
-              method: 'notifications/progress',
-              params: { progressToken, progress: progressStep, total: checks.length * 2, message },
-            })
-            .catch(() => undefined);
-        };
         let eventQueue = Promise.resolve<unknown>(undefined);
         const progress = (step: string, message: string) => {
           eventQueue = eventQueue.then(() =>
@@ -393,13 +617,11 @@ export function createChatServer(api: ChatApi) {
         };
         const runCheck = async (index: number) => {
           const command = checks[index];
-          await notify(`Starting ${command.label}`);
           await progress(command.id, `Running ${command.label}`);
           const checkResult = await executeCheck(workspace.root, command);
           results[index] = { commandId: command.id, result: checkResult };
           const outcome = checkResult.exitCode === 0 ? 'passed' : 'failed';
           await progress(command.id, `${command.label} ${outcome} in ${(checkResult.durationMs / 1_000).toFixed(1)}s`);
-          await notify(`${command.label} ${outcome}`);
         };
 
         for (const index of checks.map((_, index) => index).filter((index) => checks[index].kind === 'setup'))
@@ -466,7 +688,7 @@ export function createChatServer(api: ChatApi) {
     ({ runId, review }) =>
       protect(async () => {
         const run = await submitNativeReview(api, runId, review);
-        return { ...summary(run), findings: review.findings.length };
+        return { ...summary(run), findings: run.review?.findings.length || review.findings.length };
       }),
   );
 

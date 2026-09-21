@@ -203,6 +203,9 @@ export interface Repository extends Omit<RepositoryConfig, 'setup'> {
 export const criterionSchema = z.object({
   id: z.string().min(1),
   description: z.string().min(1),
+  sourceQuote: z.string().trim().min(3).max(500).optional(),
+  requirement: z.string().trim().min(1).max(500).optional(),
+  testEvidence: z.string().trim().min(1).max(500).optional(),
   evidence: z.enum(['test', 'review', 'human']),
   checkIds: z.array(z.string()),
   category: z.enum(['functional', 'security', 'performance', 'reliability', 'usability']),
@@ -274,6 +277,19 @@ export const reviewSchema = z.object({
   summary: z.string().min(1),
   findings: z.array(findingSchema),
   criteria: z.array(z.object({ id: z.string(), satisfied: z.boolean(), evidence: z.string() })),
+  requestCoverage: z
+    .array(
+      z.object({
+        sourceQuote: z.string().trim().min(3).max(500),
+        requirement: z.string().trim().min(1).max(500),
+        status: z.enum(['satisfied', 'missing', 'unverified']),
+        evidence: z.string().trim().min(1).max(2_000),
+        file: z.string().max(500),
+        line: z.number().int().nonnegative(),
+      }),
+    )
+    .min(1)
+    .max(30),
 });
 export type Review = z.infer<typeof reviewSchema>;
 

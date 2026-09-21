@@ -107,6 +107,16 @@ function fixture(): Run {
       summary: 'okay',
       findings: [],
       criteria: [{ id: 'AC-1', satisfied: true, evidence: 'unit gate' }],
+      requestCoverage: [
+        {
+          sourceQuote: 'fixture request',
+          requirement: 'The fixture request is satisfied.',
+          status: 'satisfied',
+          evidence: 'The fixture represents completed review evidence.',
+          file: 'index.js',
+          line: 1,
+        },
+      ],
     },
     limits: { verifications: 6 },
     repeatedFailures: 0,

@@ -165,6 +165,10 @@ async function assertStart(root: string, baseSha: string) {
   const [head, status] = await Promise.all([gitHead(root), gitStatus(root)]);
   if (head !== baseSha) throw new Error(`${root} starts at ${head}, expected ${baseSha}`);
   if (status) throw new Error(`${root} is not clean before the trial`);
+  await exec('git', ['config', 'core.autocrlf', 'false'], { cwd: root, windowsHide: true });
+  await exec('git', ['config', 'core.eol', 'lf'], { cwd: root, windowsHide: true });
+  await exec('git', ['reset', '--hard', baseSha], { cwd: root, windowsHide: true });
+  if (await gitStatus(root)) throw new Error(`${root} is not clean after normalizing benchmark line endings`);
 }
 
 interface ProcessFiles {
@@ -179,6 +183,7 @@ async function runProcess(
   environment: NodeJS.ProcessEnv,
   stdoutPath?: string,
   stderrPath?: string,
+  input?: string,
 ) {
   const files: ProcessFiles = {
     stdoutPath: stdoutPath || join(cwd, `.paired-stdout-${process.pid}-${Date.now()}.log`),
@@ -191,8 +196,13 @@ async function runProcess(
     env: environment,
     windowsHide: true,
     shell: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
+  if (!child.stdout || !child.stderr) throw new Error(`Failed to capture ${command} output`);
+  if (input !== undefined) {
+    if (!child.stdin) throw new Error(`Failed to open ${command} input`);
+    child.stdin.end(input);
+  }
   const stdout = createWriteStream(files.stdoutPath);
   const stderr = createWriteStream(files.stderrPath);
   child.stdout.pipe(stdout);
@@ -247,7 +257,7 @@ const headlessInstructions = `
 
 MANDATORY: your first tool call must be sdlc_start with this checkout's absolute repository root and the complete benchmark request. Do not inspect, edit, or run repository commands before that call. If sdlc_start is unavailable or fails, stop and report the blocker.
 
-This is a pre-authorized, noninteractive paired evaluation. Native Plan mode is unavailable in this headless session. The benchmark request itself is the developer's acceptance of a faithful implementation plan, so summarize that plan internally and continue in this same session without pausing or stopping because the session is in Default mode. Record the accepted plan through the lifecycle checkpoint on the first sdlc_verify call. After implementation, repair every returned failure, and stop when verification asks for native review or reaches a verified delivery state. The repository policy is already prepared. Do all implementation work yourself; do not spawn, delegate, or use collaboration tools. Do not commit, push, publish, or deploy.
+This is a pre-authorized, noninteractive paired evaluation. Native Plan mode is unavailable in this headless session. The benchmark request itself is the developer's acceptance of a faithful implementation plan, so summarize that plan internally and continue in this same session without pausing or stopping because the session is in Default mode. Before editing, separate every requested behavior, conjunction, exception, boundary case, and compatibility constraint. The first sdlc_verify checkpoint must trace each one to an exact quote from the request, a measurable acceptance criterion, and specific test evidence. After implementation, repair every returned failure, and stop when verification asks for native review or reaches a verified delivery state. The repository policy is already prepared. Do all implementation work yourself; do not spawn, delegate, or use collaboration tools. Do not commit, push, publish, or deploy.
 `;
 
 const governedGateInstructions = `
@@ -257,7 +267,9 @@ Do not directly execute any full build, lint, test, security, or benchmark comma
 `;
 
 const reviewInstructions = `
-Perform only the requested native code review. Do not call MCP tools, start an SDLC run, modify files, or run the project's test suite. Compare the uncommitted diff with the complete original request included below. Inspect for correctness, regressions, security, and missing requirements. Your final response must be one JSON object with a summary string and a findings array. Each finding must contain id, severity, file, line, description, correction, and nullable criterionId. Return an empty findings array only when the implementation satisfies the complete request. Do not wrap the JSON in Markdown.
+Perform only the requested native code review. Do not call MCP tools, start an SDLC run, modify files, or run the project's test suite. First decompose the complete original request into distinct behaviors, conjunctions, exceptions, boundary cases, and compatibility constraints. Then compare every item with the accepted criteria, uncommitted diff, and test changes. A passing broad test command is not evidence that a specific behavior was tested. Report an omitted request clause as a high-severity finding with a null criterionId.
+
+Your final response must be one JSON object containing summary, findings, criteria, and requestCoverage. Return one criteria verdict for every accepted criterion ID. Return one requestCoverage entry for every distinct requested behavior using an exact sourceQuote from the original request. Use status missing or unverified whenever the diff and focused test evidence do not establish the behavior. Return an empty findings array only when every criterion and requestCoverage entry is satisfied. Do not wrap the JSON in Markdown.
 `;
 
 function reviewCodexConfig(run: PairedRun) {
@@ -332,26 +344,57 @@ function implementationComplete(state?: HarnessState) {
 const reviewSchema = {
   type: 'object',
   properties: {
-    summary: { type: 'string' },
+    summary: { type: 'string', minLength: 1 },
     findings: {
       type: 'array',
       items: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
+          id: { type: 'string', minLength: 1 },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
           file: { type: 'string' },
           line: { type: 'integer', minimum: 0 },
-          description: { type: 'string' },
-          correction: { type: 'string' },
+          description: { type: 'string', minLength: 1 },
+          correction: { type: 'string', minLength: 1 },
           criterionId: { type: ['string', 'null'] },
         },
         required: ['id', 'severity', 'file', 'line', 'description', 'correction', 'criterionId'],
         additionalProperties: false,
       },
     },
+    criteria: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          satisfied: { type: 'boolean' },
+          evidence: { type: 'string', minLength: 1 },
+        },
+        required: ['id', 'satisfied', 'evidence'],
+        additionalProperties: false,
+      },
+    },
+    requestCoverage: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        properties: {
+          sourceQuote: { type: 'string', minLength: 3 },
+          requirement: { type: 'string', minLength: 1 },
+          status: { type: 'string', enum: ['satisfied', 'missing', 'unverified'] },
+          evidence: { type: 'string', minLength: 1 },
+          file: { type: 'string' },
+          line: { type: 'integer', minimum: 0 },
+        },
+        required: ['sourceQuote', 'requirement', 'status', 'evidence', 'file', 'line'],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ['summary', 'findings'],
+  required: ['summary', 'findings', 'criteria', 'requestCoverage'],
   additionalProperties: false,
 };
 
@@ -368,6 +411,27 @@ const reviewPayloadSchema = z.object({
       criterionId: z.string().nullable(),
     }),
   ),
+  criteria: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        satisfied: z.boolean(),
+        evidence: z.string().min(1),
+      }),
+    )
+    .min(1),
+  requestCoverage: z
+    .array(
+      z.object({
+        sourceQuote: z.string().min(3),
+        requirement: z.string().min(1),
+        status: z.enum(['satisfied', 'missing', 'unverified']),
+        evidence: z.string().min(1),
+        file: z.string(),
+        line: z.number().int().nonnegative(),
+      }),
+    )
+    .min(1),
 });
 
 export function parseNativeReviewOutput(text: string) {
@@ -375,8 +439,6 @@ export function parseNativeReviewOutput(text: string) {
   try {
     return reviewPayloadSchema.parse(JSON.parse(output));
   } catch (error) {
-    if (/\b(no (?:actionable )?findings|no regressions (?:are )?evident|no issues found)\b/i.test(output))
-      return { summary: output, findings: [] };
     throw new Error('Native review did not return structured findings', { cause: error });
   }
 }
@@ -394,37 +456,43 @@ async function completeHarnessReview(
   const state = result.harnessState;
   if (state?.status !== 'needs_review') return result;
   if (!state.runId || !result.threadId) throw new Error(`${task.id}: review requested without run and thread IDs`);
+  const detail = await api.request<{
+    run: {
+      contract?: {
+        criteria: {
+          id: string;
+          description: string;
+          sourceQuote?: string;
+          requirement?: string;
+          testEvidence?: string;
+        }[];
+      };
+    };
+  }>(`/api/runs/${state.runId}`);
+  const acceptedCriteria = detail.run.contract?.criteria || [];
+  if (!acceptedCriteria.length) throw new Error(`${task.id}: native review requested without acceptance criteria`);
   const schemaPath = join(outputDirectory, 'native-review.schema.json');
   const reviewOutput = join(outputDirectory, `${task.id}-harness-review.json`);
   const reviewJsonl = join(outputDirectory, `${task.id}-harness-review.jsonl`);
   const reviewStderr = join(outputDirectory, `${task.id}-harness-review.stderr.log`);
-  await writeFile(
-    join(reviewerHome, 'AGENTS.md'),
-    `${reviewInstructions.trim()}\n\n## Complete original request\n\n${prompt.trim()}\n`,
-    'utf8',
-  );
+  const reviewPrompt = `${reviewInstructions.trim()}\n\n## Accepted criteria\n\n${JSON.stringify(acceptedCriteria, null, 2)}\n\n## Complete original request\n\n${prompt.trim()}\n`;
   await writeFile(schemaPath, `${JSON.stringify(reviewSchema, null, 2)}\n`, 'utf8');
   const review = await runProcess(
     'codex',
     [
       'exec',
-      'review',
-      '--json',
-      '--model',
-      run.model,
-      '-c',
-      `model_reasoning_effort=${JSON.stringify(run.reasoningEffort)}`,
-      ...isolationArgs(run),
-      '--uncommitted',
+      ...commonCodexArgs(run, result.root),
       '--output-schema',
       schemaPath,
       '--output-last-message',
       reviewOutput,
+      '-',
     ],
     result.root,
     { ...process.env, CODEX_HOME: reviewerHome },
     reviewJsonl,
     reviewStderr,
+    reviewPrompt,
   );
   if (review.exitCode !== 0) throw new Error(`${task.id}: native review failed; inspect ${reviewStderr}`);
   const reviewPayload = parseNativeReviewOutput(await readFile(reviewOutput, 'utf8'));
@@ -452,7 +520,7 @@ async function completeHarnessReview(
     `The independent native review for governed run ${state.runId} found blocking defects and has already been recorded by the controller.`,
     'Fix every blocking finding below and call sdlc_verify again without a checkpoint.',
     'Stop when the run is verified and ready for publication. Do not commit, push, publish, or deploy.',
-    JSON.stringify(reviewPayload),
+    JSON.stringify(reviewed.review || reviewPayload),
   ].join('\n\n');
   const resumeJsonl = join(outputDirectory, `${task.id}-harness-resume.jsonl`);
   const resumeStderr = join(outputDirectory, `${task.id}-harness-resume.stderr.log`);
