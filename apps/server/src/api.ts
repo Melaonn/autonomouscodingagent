@@ -116,6 +116,19 @@ export async function buildApi(store: Store, runs: RunService) {
     if (roles[req.user.role] < roles[role]) throw error(403, `${role} role required`);
     return req.user;
   };
+  const tenantId = (user: User) => user.login.trim().toLowerCase();
+  const tenantVisible = (user: User, record: { tenantId?: string }) =>
+    record.tenantId === tenantId(user) || (!record.tenantId && user.role === 'admin');
+  const requireTenantRun = async (user: User, id: string) => {
+    const run = await store.getRun(id);
+    if (!run || !tenantVisible(user, run)) throw error(404, 'Run not found');
+    return run;
+  };
+  const requireTenantRepository = async (user: User, id: string) => {
+    const repository = await store.get<Repository>('repository', id);
+    if (!repository || !tenantVisible(user, repository)) throw error(404, 'Repository not found');
+    return repository;
+  };
   const setSession = async (reply: FastifyReply, user: User) => {
     const id = nonce();
     const csrf = nonce();
@@ -322,7 +335,7 @@ export async function buildApi(store: Store, runs: RunService) {
       github: await githubConfigured(),
       githubOAuth: githubOAuthConfigured(),
       githubLogin: actor.login === 'codex-mcp' || actor.login === 'local-operator' ? null : actor.login,
-      repositories: (await store.repositories()).length,
+      repositories: (await store.repositories()).filter((repository) => tenantVisible(actor, repository)).length,
     };
   });
   app.get('/api/github/repositories', async (req) => {
@@ -335,8 +348,8 @@ export async function buildApi(store: Store, runs: RunService) {
     return profiles;
   });
   app.get('/api/repositories', async (req) => {
-    requireRole(req, 'viewer');
-    return store.repositories();
+    const actor = requireRole(req, 'viewer');
+    return (await store.repositories()).filter((repository) => tenantVisible(actor, repository));
   });
   app.post('/api/repositories', async (req) => {
     const actor = requireRole(req, 'operator');
@@ -355,12 +368,14 @@ export async function buildApi(store: Store, runs: RunService) {
       throw error(400, 'Configure required CI checks or a documented CI waiver');
     const existing = (await store.repositories()).find(
       (repository) =>
+        tenantVisible(actor, repository) &&
         repository.owner.toLowerCase() === input.owner.toLowerCase() &&
         repository.repo.toLowerCase() === input.repo.toLowerCase(),
     );
     const repository = {
       ...input,
       id: existing?.id || randomUUID(),
+      tenantId: tenantId(actor),
       version: (existing?.version || 0) + 1,
       createdAt: new Date().toISOString(),
     };
@@ -431,13 +446,14 @@ export async function buildApi(store: Store, runs: RunService) {
     return { integration, tools };
   });
   app.get('/api/runs', async (req) => {
-    requireRole(req, 'viewer');
-    return (await store.runs()).map((r) => ({ ...r, policy: { ...r.policy, standards: '' } }));
+    const actor = requireRole(req, 'viewer');
+    return (await store.runs())
+      .filter((run) => tenantVisible(actor, run))
+      .map((run) => ({ ...run, policy: { ...run.policy, standards: '' } }));
   });
   app.get('/api/runs/:id', async (req) => {
-    requireRole(req, 'viewer');
-    const run = await store.getRun(z.object({ id: z.string().uuid() }).parse(req.params).id);
-    if (!run) throw error(404, 'Run not found');
+    const actor = requireRole(req, 'viewer');
+    const run = await requireTenantRun(actor, z.object({ id: z.string().uuid() }).parse(req.params).id);
     return { run, events: await store.events(run.id), artifacts: await store.artifacts(run.id) };
   });
   app.post('/api/runs', async (req) => {
@@ -450,33 +466,37 @@ export async function buildApi(store: Store, runs: RunService) {
         workspace: workspaceStateSchema,
       })
       .parse(req.body);
-    const repository = await store.get<Repository>('repository', body.repositoryId);
-    if (!repository) throw error(404, 'Repository not found');
+    const repository = await requireTenantRepository(actor, body.repositoryId);
     return runs.create(repository, body.prompt, body.workspace, body.mode, actor.login);
   });
   app.post('/api/runs/:id/plan', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.savePlan(id, planSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/requirements', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveRequirements(id, contractSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/design', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveDesign(id, designSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/specification', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveSpecification(id, specificationSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/progress', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z
       .object({ phase: z.enum(phases), step: z.string().min(1).max(100), message: z.string().min(1).max(2000) })
       .parse(req.body);
@@ -485,6 +505,7 @@ export async function buildApi(store: Store, runs: RunService) {
   app.post('/api/runs/:id/verify', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const resultSchema = z.object({
       exitCode: z.number().int(),
       stdout: z.string().max(300000),
@@ -505,11 +526,13 @@ export async function buildApi(store: Store, runs: RunService) {
   app.post('/api/runs/:id/review', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.saveReview(id, reviewSchema.parse(req.body), actor.login);
   });
   app.post('/api/runs/:id/publish', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z
       .object({
         candidateDigest: z.string().regex(/^[0-9a-f]{40}$/),
@@ -522,43 +545,48 @@ export async function buildApi(store: Store, runs: RunService) {
   app.post('/api/runs/:id/sync', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.sync(id, actor.login);
   });
   app.post('/api/runs/:id/answer', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z.object({ answer: z.string().min(1).max(10000) }).parse(req.body);
     return runs.answer(id, body.answer, actor.login);
   });
   app.post('/api/runs/:id/approval', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     const body = z.object({ approved: z.boolean(), digest: z.string() }).parse(req.body);
     return runs.approve(id, body.approved, body.digest, actor.login);
   });
   app.post('/api/runs/:id/cancel', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.cancel(id, actor.login);
   });
   app.post('/api/runs/:id/resume', async (req) => {
     const actor = requireRole(req, 'operator');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
+    await requireTenantRun(actor, id);
     return runs.resume(id, actor.login);
   });
   app.get('/api/runs/:id/report', async (req, reply) => {
-    requireRole(req, 'viewer');
+    const actor = requireRole(req, 'viewer');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
-    const run = await store.getRun(id);
-    if (!run) throw error(404, 'Run not found');
+    const run = await requireTenantRun(actor, id);
     reply.type('text/markdown').header('content-disposition', `attachment; filename="sdlc-${id}.md"`);
     return report(run);
   });
   app.get('/api/artifacts/:id', async (req, reply) => {
-    requireRole(req, 'viewer');
+    const actor = requireRole(req, 'viewer');
     const id = z.object({ id: z.string().uuid() }).parse(req.params).id;
-    const artifact = await store.get<{ name: string; content: string }>('artifact', id);
+    const artifact = await store.get<{ runId: string; name: string; content: string }>('artifact', id);
     if (!artifact) throw error(404, 'Artifact not found');
+    await requireTenantRun(actor, artifact.runId);
     reply
       .type(artifact.name.endsWith('.json') ? 'application/json' : 'text/plain')
       .header('content-disposition', `attachment; filename="${artifact.name.replace(/[^\w.-]/g, '_')}"`);

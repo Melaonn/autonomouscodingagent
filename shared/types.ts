@@ -195,6 +195,7 @@ export const repositorySchema = z
 export type RepositoryConfig = z.infer<typeof repositorySchema>;
 export interface Repository extends Omit<RepositoryConfig, 'setup'> {
   id: string;
+  tenantId?: string;
   version: number;
   createdAt: string;
   setup?: RepositoryConfig['setup'];
@@ -347,6 +348,7 @@ export interface Artifact {
 
 export interface Run {
   id: string;
+  tenantId?: string;
   repositoryId: string;
   prompt: string;
   backend: Backend;

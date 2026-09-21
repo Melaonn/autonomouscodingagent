@@ -215,4 +215,115 @@ describe('dashboard authentication', () => {
       await store.close();
     }
   });
+
+  it('isolates repositories, runs, reports, artifacts, and mutations by GitHub user', async () => {
+    const store = await Store.open();
+    const app = await buildApi(store, new RunService(store));
+    const alice = { session: 'alice-session', csrf: 'alice-csrf' };
+    const bob = { session: 'bob-session', csrf: 'bob-csrf' };
+    const repositoryInput = {
+      name: 'Shared repository name',
+      owner: 'example-company',
+      repo: 'service',
+      branch: 'main',
+      stack: 'typescript',
+      standards: '',
+      checks: [
+        {
+          id: 'unit',
+          label: 'Unit tests',
+          argv: ['npm', 'test'],
+          required: true,
+          kind: 'unit',
+          report: 'exit',
+          reportPath: '',
+          timeoutSeconds: 60,
+        },
+      ],
+      requiredCiChecks: [],
+      ciWaiver: 'Isolation test does not publish.',
+      protectedPaths: [],
+      deployment: {
+        enabled: false,
+        target: '',
+        environment: 'staging',
+        workflow: 'deploy.yml',
+        rollbackWorkflow: 'rollback.yml',
+        healthUrl: '',
+        monitorIntervalSeconds: 300,
+      },
+    };
+    const request = (identity: typeof alice, method: 'GET' | 'POST', url: string, payload?: Record<string, unknown>) =>
+      app.inject({
+        method,
+        url,
+        cookies: { sdlc_session: identity.session },
+        headers: method === 'POST' ? { 'x-csrf-token': identity.csrf } : undefined,
+        payload,
+      });
+
+    try {
+      await store.setSession(alice.session, { login: 'Alice', role: 'operator' }, alice.csrf);
+      await store.setSession(bob.session, { login: 'Bob', role: 'operator' }, bob.csrf);
+
+      const aliceRepositoryResponse = await request(alice, 'POST', '/api/repositories', repositoryInput);
+      const bobRepositoryResponse = await request(bob, 'POST', '/api/repositories', repositoryInput);
+      expect(aliceRepositoryResponse.statusCode).toBe(200);
+      expect(bobRepositoryResponse.statusCode).toBe(200);
+      const aliceRepository = aliceRepositoryResponse.json<{ id: string; tenantId: string }>();
+      const bobRepository = bobRepositoryResponse.json<{ id: string; tenantId: string }>();
+      expect(aliceRepository).toMatchObject({ tenantId: 'alice' });
+      expect(bobRepository).toMatchObject({ tenantId: 'bob' });
+      expect(bobRepository.id).not.toBe(aliceRepository.id);
+
+      const aliceRepositories = (await request(alice, 'GET', '/api/repositories')).json<{ id: string }[]>();
+      const bobRepositories = (await request(bob, 'GET', '/api/repositories')).json<{ id: string }[]>();
+      expect(aliceRepositories.map(({ id }) => id)).toEqual([aliceRepository.id]);
+      expect(bobRepositories.map(({ id }) => id)).toEqual([bobRepository.id]);
+
+      const createRun = await request(alice, 'POST', '/api/runs', {
+        repositoryId: aliceRepository.id,
+        prompt: 'Add user isolation to every lifecycle record.',
+        mode: 'delivery',
+        workspace: {
+          branch: 'main',
+          headSha: 'a'.repeat(40),
+          digest: 'b'.repeat(40),
+          dirty: false,
+          changes: [],
+        },
+      });
+      expect(createRun.statusCode).toBe(200);
+      const run = createRun.json<{ run: { id: string; tenantId: string } }>().run;
+      expect(run.tenantId).toBe('alice');
+      const storedRun = await store.getRun(run.id);
+      const artifact = await store.artifact(storedRun!, 'private.txt', 'alice-only evidence');
+
+      expect((await request(alice, 'GET', '/api/runs')).json<{ id: string }[]>()).toHaveLength(1);
+      expect((await request(bob, 'GET', '/api/runs')).json<{ id: string }[]>()).toHaveLength(0);
+      expect((await request(alice, 'GET', `/api/runs/${run.id}`)).statusCode).toBe(200);
+      expect((await request(bob, 'GET', `/api/runs/${run.id}`)).statusCode).toBe(404);
+      expect((await request(bob, 'GET', `/api/runs/${run.id}/report`)).statusCode).toBe(404);
+      expect((await request(bob, 'GET', `/api/artifacts/${artifact.id}`)).statusCode).toBe(404);
+      expect((await request(alice, 'GET', `/api/artifacts/${artifact.id}`)).body).toBe('alice-only evidence');
+      expect((await request(bob, 'POST', `/api/runs/${run.id}/cancel`, {})).statusCode).toBe(404);
+
+      const crossTenantCreate = await request(bob, 'POST', '/api/runs', {
+        repositoryId: aliceRepository.id,
+        prompt: 'Attempt to use a repository owned by another user.',
+        mode: 'delivery',
+        workspace: {
+          branch: 'main',
+          headSha: 'a'.repeat(40),
+          digest: 'b'.repeat(40),
+          dirty: false,
+          changes: [],
+        },
+      });
+      expect(crossTenantCreate.statusCode).toBe(404);
+    } finally {
+      await app.close();
+      await store.close();
+    }
+  });
 });
