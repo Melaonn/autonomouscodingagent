@@ -50,6 +50,13 @@ type GitHubRepository = {
   defaultBranch: string;
   language: string | null;
 };
+type Readiness = {
+  execution: string;
+  githubIdentity: boolean;
+  repositoryAccess: string;
+  database: boolean;
+  deploymentApproval: string;
+};
 let csrf = '';
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -1169,7 +1176,7 @@ function GateIcon({ status }: { status: string }) {
     <LoaderCircle className="spin" />
   );
 }
-function RepositoriesPage() {
+function RepositoriesPage({ canManage }: { canManage: boolean }) {
   const [repos, setRepos] = useState<Repository[]>([]);
   const [profiles, setProfiles] = useState<Record<string, Repository['checks']>>({});
   const [available, setAvailable] = useState<GitHubRepository[]>([]);
@@ -1273,7 +1280,7 @@ function RepositoriesPage() {
       await api('/api/repositories', {
         method: 'POST',
         body: JSON.stringify({
-          name: form.name,
+          name: form.name.trim() || form.repo.trim(),
           owner: form.owner,
           repo: form.repo,
           branch: form.branch,
@@ -1338,7 +1345,7 @@ function RepositoriesPage() {
           <h1>Repositories</h1>
           <p>Projects opened through Codex appear here with detected commands and policies ready for review.</p>
         </div>
-        <button className="button primary" onClick={() => setOpen(true)} disabled={!available.length}>
+        <button className="button primary" onClick={() => setOpen(true)} disabled={!canManage}>
           <Plus />
           Add repository
         </button>
@@ -1354,7 +1361,7 @@ function RepositoriesPage() {
           <LoaderCircle className="spin" />
           <div>
             <strong>Loading repositories</strong>
-            <p>Reading saved policies and repositories allowed by GitHub.</p>
+            <p>Reading saved policies and optional server-side GitHub access.</p>
           </div>
         </div>
       )}
@@ -1362,8 +1369,11 @@ function RepositoriesPage() {
         <div className="notice warning">
           <Github />
           <div>
-            <strong>Connect GitHub first</strong>
-            <p>The setup page will verify your token and load its allowed repositories here.</p>
+            <strong>Open your project in Codex</strong>
+            <p>
+              The first governed prompt detects and registers the local checkout automatically. Administrators can also
+              add its owner and repository name manually.
+            </p>
           </div>
         </div>
       )}
@@ -1418,7 +1428,7 @@ function RepositoriesPage() {
         <section className="panel">
           <Empty
             title="No repository selected"
-            text="Choose one of the repositories authorized through the connected GitHub account."
+            text="Choose a repository available to the server, or let Codex register your local checkout automatically."
           />
         </section>
       )}
@@ -1485,24 +1495,57 @@ function RepositoriesPage() {
                 )}
               </section>
             )}
+            {available.length > 0 && (
+              <label>
+                Repository available to the server
+                <select value={selectedIsAvailable ? selectedFullName : ''} onChange={(e) => choose(e.target.value)}>
+                  <option value="">Enter a local checkout below…</option>
+                  {available.map((repo) => (
+                    <option key={repo.fullName} value={repo.fullName}>
+                      {repo.fullName}
+                      {repo.private ? ' · private' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="notice">
+              <GitBranch />
+              <div>
+                <strong>Local checkout details</strong>
+                <p>
+                  These identify the project. Git operations still use the credentials already configured on your
+                  computer.
+                </p>
+              </div>
+            </div>
+            <div className="two">
+              <label>
+                GitHub owner
+                <input
+                  required
+                  value={form.owner}
+                  onChange={(e) => setForm({ ...form, owner: e.target.value.trim() })}
+                  placeholder="organization-or-user"
+                />
+              </label>
+              <label>
+                Repository name
+                <input
+                  required
+                  value={form.repo}
+                  onChange={(e) => setForm({ ...form, repo: e.target.value.trim() })}
+                  placeholder="project-name"
+                />
+              </label>
+            </div>
             <label>
-              GitHub repository
-              <select
-                required
-                value={form.owner && form.repo ? `${form.owner}/${form.repo}` : ''}
-                onChange={(e) => choose(e.target.value)}
-              >
-                <option value="">Choose repository…</option>
-                {selectedFullName && !selectedIsAvailable && (
-                  <option value={selectedFullName}>{selectedFullName} · local checkout</option>
-                )}
-                {available.map((repo) => (
-                  <option key={repo.fullName} value={repo.fullName}>
-                    {repo.fullName}
-                    {repo.private ? ' · private' : ''}
-                  </option>
-                ))}
-              </select>
+              Display name
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder={form.repo || 'Defaults to the repository name'}
+              />
             </label>
             <div className="two">
               <label>
@@ -1920,7 +1963,7 @@ function SetupStatus({ label }: { label: string }) {
   );
 }
 function SystemPage() {
-  const [ready, setReady] = useState<Record<string, unknown>>({});
+  const [ready, setReady] = useState<Readiness | null>(null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
@@ -1933,7 +1976,7 @@ function SystemPage() {
     headerEnv: '{}',
   });
   const load = () =>
-    Promise.all([api<Record<string, unknown>>('/api/readiness'), api<Integration[]>('/api/integrations')])
+    Promise.all([api<Readiness>('/api/readiness'), api<Integration[]>('/api/integrations')])
       .then(([r, i]) => {
         setReady(r);
         setIntegrations(i);
@@ -1989,8 +2032,35 @@ function SystemPage() {
         </div>
       </header>
       {error && <div className="notice error">{error}</div>}
-      <section className="panel">
-        <pre className="system-json">{JSON.stringify(ready, null, 2)}</pre>
+      <section className="principles readiness-grid">
+        <article>
+          <Bot />
+          <h2>Development agent</h2>
+          <p>{ready?.execution || 'Checking…'}</p>
+          <span className={`badge ${ready ? 'monitoring' : 'running'}`}>{ready ? 'ready' : 'checking'}</span>
+        </article>
+        <article>
+          <Github />
+          <h2>GitHub sign-in</h2>
+          <p>{ready?.githubIdentity ? 'Connected for dashboard identity' : 'Not configured by the administrator'}</p>
+          <span className={`badge ${ready?.githubIdentity ? 'monitoring' : 'blocked'}`}>
+            {ready?.githubIdentity ? 'connected' : 'unavailable'}
+          </span>
+        </article>
+        <article>
+          <GitBranch />
+          <h2>Repository operations</h2>
+          <p>{ready?.repositoryAccess || 'Checking…'}</p>
+          <span className={`badge ${ready ? 'monitoring' : 'running'}`}>{ready ? 'ready' : 'checking'}</span>
+        </article>
+        <article>
+          <Database />
+          <h2>Lifecycle storage</h2>
+          <p>{ready?.database ? 'Database connected' : 'Database unavailable'}</p>
+          <span className={`badge ${ready?.database ? 'monitoring' : 'blocked'}`}>
+            {ready?.database ? 'ready' : 'blocked'}
+          </span>
+        </article>
       </section>
       <section className="principles">
         <article>
@@ -2164,7 +2234,7 @@ function App() {
       ) : page === 'runs' ? (
         <RunsPage onOpen={setRunId} />
       ) : page === 'repositories' ? (
-        <RepositoriesPage />
+        <RepositoriesPage canManage={me.user.role === 'admin'} />
       ) : page === 'knowledge' ? (
         <KnowledgePage />
       ) : (

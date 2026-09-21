@@ -373,9 +373,10 @@ describe('Codex chat integration', () => {
     expect((await store.repositories())[0].setup?.tasks.every((item) => item.status === 'verified')).toBe(true);
   }, 30_000);
 
-  it('rejects external hosts and redirects, and does not retry failed mutations', async () => {
-    expect(() => new ChatClient('https://example.com')).toThrow('loopback');
-    expect(() => new ChatClient('http://127.0.0.1:4310/path')).toThrow('loopback');
+  it('allows remote HTTPS, rejects unsafe server URLs and redirects, and does not retry failed mutations', async () => {
+    expect(new ChatClient('https://example.com').url).toBe('https://example.com');
+    expect(() => new ChatClient('http://example.com')).toThrow('requires HTTPS');
+    expect(() => new ChatClient('http://127.0.0.1:4310/path')).toThrow('requires HTTPS');
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(

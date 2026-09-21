@@ -195,9 +195,10 @@ export async function buildApi(store: Store, runs: RunService) {
     requireRole(req, 'viewer');
     return {
       execution: 'native Codex app or CLI',
-      github: await githubConfigured(),
+      githubIdentity: githubOAuthConfigured(),
+      repositoryAccess: (await githubConfigured()) ? 'server API and local Git' : 'developer local Git',
       database: true,
-      deploymentRule: 'explicit approval required',
+      deploymentApproval: 'required',
     };
   });
   app.get('/api/setup', async (req) => {

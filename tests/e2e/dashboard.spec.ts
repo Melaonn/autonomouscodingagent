@@ -29,7 +29,10 @@ test('local operator reaches native Codex and GitHub onboarding', async ({ page 
   await expect(page.getByText('See what Codex is doing, what passed, and when you need to act.')).toBeVisible();
   await page.getByRole('button', { name: 'Repositories' }).click();
   await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
-  await expect(page.getByText('Connect GitHub first')).toBeVisible();
+  await expect(page.getByText('Open your project in Codex')).toBeVisible();
+  await page.getByRole('button', { name: 'Add repository' }).click();
+  await expect(page.getByLabel('GitHub owner')).toBeVisible();
+  await expect(page.getByLabel('Repository name')).toBeVisible();
 });
 
 test('run detail explains the work in the seven SDLC phases without overflow', async ({ page }) => {
@@ -366,7 +369,8 @@ test('auto-detected repository setup is clearly presented for confirmation', asy
   await expect(page.getByText('Detected SDLC capabilities')).toBeVisible();
   await page.getByText('1 bootstrap tasks proposed').click();
   await expect(page.getByText('Create the end-to-end test foundation')).toBeVisible();
-  await expect(page.getByLabel('GitHub repository')).toHaveValue('e2e-team/detected-service');
+  await expect(page.getByLabel('GitHub owner')).toHaveValue('e2e-team');
+  await expect(page.getByLabel('Repository name')).toHaveValue('detected-service');
   await page.getByRole('button', { name: 'Save reviewed setup' }).click();
   await expect(page.getByRole('heading', { name: 'Review detected project setup' })).not.toBeVisible();
   await expect(page.getByText('review setup', { exact: true })).not.toBeVisible();

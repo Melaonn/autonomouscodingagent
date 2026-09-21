@@ -23,6 +23,8 @@ The repository includes a Render Blueprint that creates one free Node web servic
 
 The local MCP process still inspects and edits the developer's local checkout and executes local quality gates. Render hosts only the dashboard, lifecycle state, company context, and remote delivery coordination.
 
+GitHub browser login identifies the dashboard user; it does not grant repository scopes. On the first governed prompt, the local Codex process reads the checkout's existing Git remote and registers the repository automatically. Repository fetch, branch, commit, and push operations continue to use the developer's local Git and Git Credential Manager setup. An administrator can enter owner/repository details in the dashboard as a fallback, but no extra GitHub login is required.
+
 ## Free-tier limitations
 
 - The web service spins down after 15 minutes without inbound traffic and can take about one minute to wake.
